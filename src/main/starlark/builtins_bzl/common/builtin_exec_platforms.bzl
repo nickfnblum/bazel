@@ -16,6 +16,9 @@
 See https://github.com/bazelbuild/bazel/discussions/19213.
 """
 
+# TODO: Remove when get_current_os_name is no longer needed
+load("@_builtins//:common/python/py_internal.bzl", "py_internal")
+
 # The fragments that make up Bazel's exec transition. The fragment() calls in
 # this file fill out this map.
 bazel_fragments = {}
@@ -110,10 +113,6 @@ def _exec_transition_impl(fragments):
 
 bazel_fragments["AndroidConfiguration.Options"] = fragment(
     propagate = [
-        "//command_line_option:android_crosstool_top",
-        "//command_line_option:android_sdk",
-        "//command_line_option:incompatible_enable_android_toolchain_resolution",
-        "//command_line_option:incompatible_android_platforms_transition_updated_affected",
         "//command_line_option:desugar_for_android",
         "//command_line_option:desugar_java8_libs",
         "//command_line_option:experimental_check_desugar_deps",
@@ -133,15 +132,33 @@ bazel_fragments["AndroidConfiguration.Options"] = fragment(
         "//command_line_option:internal_persistent_busybox_tools",
         "//command_line_option:internal_persistent_multiplex_busybox_tools",
         "//command_line_option:incompatible_disable_native_android_rules",
+        "//command_line_option:android_databinding_use_androidx",
+        "//command_line_option:android_databinding_use_v3_4_args",
+        "//command_line_option:break_build_on_parallel_dex2oat_failure",
+        "//command_line_option:experimental_always_filter_duplicate_classes_from_android_test",
+        "//command_line_option:experimental_android_compress_java_resources",
+        "//command_line_option:experimental_android_databinding_v2",
+        "//command_line_option:experimental_android_library_exports_manifest_default",
+        "//command_line_option:experimental_android_resource_cycle_shrinking",
+        "//command_line_option:experimental_android_resource_name_obfuscation",
+        "//command_line_option:experimental_android_resource_path_shortening",
+        "//command_line_option:experimental_android_resource_shrinking",
+        "//command_line_option:experimental_android_rewrite_dexes_with_rex",
+        "//command_line_option:experimental_android_use_parallel_dex2oat",
+        "//command_line_option:experimental_disable_instrumentation_manifest_merge",
+        "//command_line_option:experimental_filter_library_jar_with_program_jar",
+        "//command_line_option:experimental_filter_r_jars_from_android_test",
+        "//command_line_option:experimental_get_android_java_resources_from_optimized_jar",
+        "//command_line_option:experimental_omit_resources_info_provider_from_android_binary",
+        "//command_line_option:experimental_persistent_aar_extractor",
+        "//command_line_option:experimental_remove_r_classes_from_instrumentation_test_jar",
+        "//command_line_option:experimental_use_rtxt_from_merged_resources",
+        "//command_line_option:experimental_objc_provider_from_linked",
     ],
     outputs = [
-        "//command_line_option:android hwasan",
-        "//command_line_option:fat_apk_cpu",
         "//command_line_option:Android configuration distinguisher",
     ],
     func = lambda settings: {
-        "//command_line_option:android hwasan": False,
-        "//command_line_option:fat_apk_cpu": [],
         "//command_line_option:Android configuration distinguisher": "main",
     },
 )
@@ -182,8 +199,6 @@ bazel_fragments["BazelConfigurarion$Options"] = fragment(
 
 bazel_fragments["BazelPythonConfiguration$Options"] = fragment(
     propagate = [
-        "//command_line_option:python2_path",
-        "//command_line_option:python3_path",
         "//command_line_option:python_top",
         "//command_line_option:python_path",
         "//command_line_option:experimental_python_import_all_repositories",
@@ -209,18 +224,14 @@ bazel_fragments["ConfigFeatureFlagOptions"] = fragment(
 )
 
 def _core_options(settings):
-    ans = {
+    return {
         "//command_line_option:compilation_mode": settings["//command_line_option:host_compilation_mode"],
         "//command_line_option:is exec configuration": True,
         "//command_line_option:cpu": settings["//command_line_option:host_cpu"],
         "//command_line_option:stamp": False,
         "//command_line_option:action_env": settings["//command_line_option:host_action_env"],
+        "//command_line_option:features": settings["//command_line_option:host_features"],
     }
-    if settings["//command_line_option:incompatible_use_host_features"]:
-        ans["//command_line_option:features"] = settings["//command_line_option:host_features"]
-    else:
-        ans["//command_line_option:features"] = settings["//command_line_option:features"]
-    return ans
 
 bazel_fragments["CoreOptions"] = fragment(
     propagate = [
@@ -233,10 +244,12 @@ bazel_fragments["CoreOptions"] = fragment(
         "//command_line_option:incompatible_merge_genfiles_directory",
         "//command_line_option:experimental_platform_in_output_dir",
         "//command_line_option:host_cpu",
+        "//command_line_option:incompatible_modify_execution_info_additive",
         "//command_line_option:include_config_fragments_provider",
         "//command_line_option:experimental_debug_selects_always_succeed",
         "//command_line_option:incompatible_check_testonly_for_output_files",
         "//command_line_option:incompatible_auto_exec_groups",
+        "//command_line_option:incompatible_bazel_test_exec_run_under",
         "//command_line_option:experimental_writable_outputs",
         "//command_line_option:build_runfile_manifests",
         "//command_line_option:build_runfile_links",
@@ -247,7 +260,6 @@ bazel_fragments["CoreOptions"] = fragment(
         "//command_line_option:strict_filesets",
         "//command_line_option:check_visibility",
         "//command_line_option:check_licenses",
-        "//command_line_option:incompatible_use_host_features",
         "//command_line_option:host_features",
         "//command_line_option:host_action_env",
         "//command_line_option:archived_tree_artifact_mnemonics_filter",
@@ -256,6 +268,12 @@ bazel_fragments["CoreOptions"] = fragment(
         "//command_line_option:experimental_exclude_defines_from_exec_config",
         "//command_line_option:experimental_exclude_starlark_flags_from_exec_config",
         "//command_line_option:experimental_propagate_custom_flag",
+        "//command_line_option:allow_analysis_failures",
+        "//command_line_option:experimental_collect_code_coverage_for_generated_files",
+        "//command_line_option:experimental_extended_sanity_checks",
+        "//command_line_option:experimental_inprocess_symlink_creation",
+        "//command_line_option:experimental_throttle_action_cache_check",
+        "//command_line_option:experimental_use_platforms_in_output_dir_legacy_heuristic",
     ],
     inputs = ["//command_line_option:features"],
     outputs = [
@@ -284,6 +302,7 @@ bazel_fragments["CppOptions"] = fragment(
         "//command_line_option:target libcTop label",
         "//command_line_option:experimental_link_static_libraries_once",
         "//command_line_option:experimental_cc_implementation_deps",
+        "//command_line_option:experimental_cpp_modules",
         "//command_line_option:start_end_lib",
         "//command_line_option:experimental_inmemory_dotd_files",
         "//command_line_option:incompatible_disable_legacy_cc_provider",
@@ -302,6 +321,12 @@ bazel_fragments["CppOptions"] = fragment(
         "//command_line_option:incompatible_use_cpp_compile_header_mnemonic",
         "//command_line_option:experimental_starlark_cc_import",
         "//command_line_option:incompatible_macos_set_install_name",
+        "//command_line_option:experimental_cpp_compile_resource_estimation",
+        "//command_line_option:experimental_generate_llvm_lcov",
+        "//command_line_option:experimental_omitfp",
+        "//command_line_option:experimental_platform_cc_test",
+        "//command_line_option:experimental_save_feature_state",
+        "//command_line_option:experimental_use_llvm_covmap",
     ],
     outputs = [
         "//command_line_option:crosstool_top",
@@ -318,8 +343,9 @@ bazel_fragments["CppOptions"] = fragment(
         "//command_line_option:crosstool_top": settings["//command_line_option:host_crosstool_top"],
         "//command_line_option:compiler": settings["//command_line_option:host_compiler"],
         "//command_line_option:grte_top": settings["//command_line_option:host_grte_top"],
-        "//command_line_option:copt": settings["//command_line_option:host_copt"] + ["-g0"],  # Don't add for Windows
-        "//command_line_option:cxxopt": settings["//command_line_option:host_cxxopt"] + ["-g0"],  # Don't add for Windows
+        # TODO: Properly fix https://github.com/bazelbuild/bazel/issues/24545 with features.
+        "//command_line_option:copt": settings["//command_line_option:host_copt"] + ([] if py_internal.get_current_os_name() == "windows" else ["-g0"]),
+        "//command_line_option:cxxopt": settings["//command_line_option:host_cxxopt"] + ([] if py_internal.get_current_os_name() == "windows" else ["-g0"]),
         "//command_line_option:conlyopt": settings["//command_line_option:host_conlyopt"],
         "//command_line_option:per_file_copt": settings["//command_line_option:host_per_file_copt"],
         "//command_line_option:linkopt": settings["//command_line_option:host_linkopt"],
@@ -327,12 +353,9 @@ bazel_fragments["CppOptions"] = fragment(
     },
 )
 
-# GenQueryConfiguration$GenQueryOptions: no getExec()
-
-bazel_fragments["J2ObjcCommandLineOptions"] = fragment(
+bazel_fragments["GenQueryConfiguration$GenQueryOptions"] = fragment(
     propagate = [
-        "//command_line_option:j2objc_translation_flags",
-        "//command_line_option:incompatible_j2objc_library_migration",
+        "//command_line_option:experimental_skip_ttvs_for_genquery",
     ],
 )
 
@@ -363,7 +386,6 @@ bazel_fragments["JavaOptions"] = fragment(
         "//command_line_option:experimental_allow_runtime_deps_on_neverlink",
         "//command_line_option:experimental_add_test_support_to_compile_time_deps",
         "//command_line_option:jplPropagateCcLinkParamsStore",
-        "//command_line_option:incompatible_disallow_resource_jars",
         "//command_line_option:java_runtime_version",
         "//command_line_option:java_language_version",
         "//command_line_option:experimental_bytecode_optimizers",
@@ -379,6 +401,12 @@ bazel_fragments["JavaOptions"] = fragment(
         "//command_line_option:incompatible_multi_release_deploy_jars",
         "//command_line_option:incompatible_disallow_java_import_exports",
         "//command_line_option:incompatible_disallow_java_import_empty_jars",
+        "//command_line_option:experimental_disallow_legacy_java_toolchain_flags",
+        "//command_line_option:experimental_enable_jspecify",
+        "//command_line_option:experimental_java_header_input_pruning",
+        "//command_line_option:experimental_java_test_auto_create_deploy_jar",
+        "//command_line_option:experimental_limit_android_lint_to_android_constrained_java",
+        "//command_line_option:experimental_run_android_lint_on_java_rules",
     ],
     inputs = [
         "//command_line_option:host_jvmopt",
@@ -416,7 +444,6 @@ bazel_fragments["ProtoConfiguration$Options"] = fragment(
         "//command_line_option:proto_compiler",
         "//command_line_option:protocopt",
         "//command_line_option:experimental_proto_descriptor_sets_include_source_info",
-        "//command_line_option:experimental_proto_extra_actions",
         "//command_line_option:proto_toolchain_for_java",
         "//command_line_option:proto_toolchain_for_j2objc",
         "//command_line_option:proto_toolchain_for_javalite",
@@ -443,18 +470,19 @@ bazel_fragments["PythonOptions"] = fragment(
     # Could move these toolchain configuring flags to toolchain definitions?
     # And not make them flags. Must each one toggle independently of the others?
     propagate = [
-        "//command_line_option:incompatible_py3_is_default",
-        "//command_line_option:incompatible_py2_outputs_are_suffixed",
         "//command_line_option:build_python_zip",
-        "//command_line_option:incompatible_use_python_toolchains",
+        "//command_line_option:experimental_py_binaries_include_label",
+        "//command_line_option:host_force_python",
         "//command_line_option:incompatible_allow_python_version_transitions",
         "//command_line_option:incompatible_default_to_explicit_init_py",
         "//command_line_option:incompatible_disallow_legacy_py_provider",
-        "//command_line_option:incompatible_remove_old_python_version_api",
+        "//command_line_option:incompatible_py2_outputs_are_suffixed",
+        "//command_line_option:incompatible_py3_is_default",
         "//command_line_option:incompatible_python_disable_py2",
-        "//command_line_option:python_native_rules_allowlist",
         "//command_line_option:incompatible_python_disallow_native_rules",
-        "//command_line_option:host_force_python",
+        "//command_line_option:incompatible_remove_old_python_version_api",
+        "//command_line_option:incompatible_use_python_toolchains",
+        "//command_line_option:python_native_rules_allowlist",
     ],
     outputs = [
         "//command_line_option:python_version",
@@ -468,11 +496,17 @@ bazel_fragments["ShellConfiguration$Options"] = fragment(
     ],
 )
 
+bazel_fragments["GenQueryConfiguration$GenQueryOptions"] = fragment(
+    propagate = [
+        "//command_line_option:experimental_skip_ttvs_for_genquery",
+    ],
+)
+
 # TestConfiguration$TestOptions: handled in native code. See b/295936652.
 
 # Bazel's exec transition.
 _transition_data = exec_transition(bazel_fragments)
-bazel_exec_transition = _builtins.toplevel.transition(
+bazel_exec_transition = _builtins.toplevel.exec_transition(
     implementation = _transition_data.implementation,
     inputs = _transition_data.inputs,
     outputs = _transition_data.outputs,

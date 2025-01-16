@@ -1,4 +1,4 @@
-load("@rules_java//java:defs.bzl", "java_test")
+load("@rules_java//java:defs.bzl", "java_library", "java_test")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -50,7 +50,7 @@ java_library(
         "//third_party:java-diff-utils",
         "//third_party:junit4",
         "//third_party:truth",
-        "@bazel_tools//tools/java/runfiles",
+        "@rules_java//java/runfiles",
     ],
 )
 

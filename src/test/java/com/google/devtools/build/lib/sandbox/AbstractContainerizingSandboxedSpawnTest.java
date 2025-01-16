@@ -16,10 +16,10 @@ package com.google.devtools.build.lib.sandbox;
 
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.truth.Truth.assertThat;
+import static java.util.Objects.requireNonNull;
 import static org.junit.Assert.assertThrows;
 import static org.mockito.Mockito.mock;
 
-import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -35,7 +35,6 @@ import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
-import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.lib.vfs.Symlinks;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
 import java.io.IOException;
@@ -374,7 +373,7 @@ public class AbstractContainerizingSandboxedSpawnTest {
 
   private static SandboxInputs createSandboxInputs(
       ImmutableList<String> files, ImmutableMap<String, String> symlinks) {
-    Map<PathFragment, RootedPath> filesMap = Maps.newHashMapWithExpectedSize(files.size());
+    Map<PathFragment, Path> filesMap = Maps.newHashMapWithExpectedSize(files.size());
     for (String file : files) {
       filesMap.put(PathFragment.create(file), null);
     }
@@ -384,8 +383,7 @@ public class AbstractContainerizingSandboxedSpawnTest {
         symlinks.entrySet().stream()
             .collect(
                 toImmutableMap(
-                    e -> PathFragment.create(e.getKey()), e -> PathFragment.create(e.getValue()))),
-        ImmutableMap.of());
+                    e -> PathFragment.create(e.getKey()), e -> PathFragment.create(e.getValue()))));
   }
 
   /** Return a list of all entries under the provided directory recursively. */
@@ -408,20 +406,20 @@ public class AbstractContainerizingSandboxedSpawnTest {
     return result.build();
   }
 
-  @AutoValue
-  abstract static class PathEntry {
+  record PathEntry(PathFragment relativePath, Type type) {
+    PathEntry {
+      requireNonNull(relativePath, "relativePath");
+      requireNonNull(type, "type");
+    }
+
     enum Type {
       FILE,
       DIRECTORY,
       SYMLINK
     }
 
-    abstract PathFragment relativePath();
-
-    abstract Type type();
-
     static PathEntry create(PathFragment path, Type type) {
-      return new AutoValue_AbstractContainerizingSandboxedSpawnTest_PathEntry(path, type);
+      return new PathEntry(path, type);
     }
   }
 

@@ -76,7 +76,7 @@ public class BlazeQueryEnvironment extends AbstractBlazeQueryEnvironment<Target>
   private static final int MAX_DEPTH_FULL_SCAN_LIMIT = 20;
   private final Map<String, Collection<Target>> resolvedTargetPatterns = new HashMap<>();
   private final TargetPatternPreloader targetPatternPreloader;
-  private final TargetPattern.Parser mainRepoTargetParser;
+  private final TargetPattern.Parser targetParser;
   @Nullable private final QueryTransitivePackagePreloader queryTransitivePackagePreloader;
   private final TargetProvider targetProvider;
   private final CachingPackageLocator cachingPackageLocator;
@@ -106,7 +106,7 @@ public class BlazeQueryEnvironment extends AbstractBlazeQueryEnvironment<Target>
       TargetProvider targetProvider,
       CachingPackageLocator cachingPackageLocator,
       TargetPatternPreloader targetPatternPreloader,
-      Parser mainRepoTargetParser,
+      Parser targetParser,
       boolean keepGoing,
       boolean strictScope,
       int loadingPhaseThreads,
@@ -118,7 +118,7 @@ public class BlazeQueryEnvironment extends AbstractBlazeQueryEnvironment<Target>
     super(
         keepGoing, strictScope, labelFilter, eventHandler, settings, extraFunctions, labelPrinter);
     this.targetPatternPreloader = targetPatternPreloader;
-    this.mainRepoTargetParser = mainRepoTargetParser;
+    this.targetParser = targetParser;
     this.queryTransitivePackagePreloader = queryTransitivePackagePreloader;
     this.targetProvider = targetProvider;
     this.cachingPackageLocator = cachingPackageLocator;
@@ -191,13 +191,11 @@ public class BlazeQueryEnvironment extends AbstractBlazeQueryEnvironment<Target>
       // a wildcard such as p:* are correctly ordered w.r.t. each other, so to
       // ensure this, we add edges between any pair of directly connected
       // targets in this set.
-      if (target instanceof OutputFile) {
-        OutputFile outputFile = (OutputFile) target;
+      if (target instanceof OutputFile outputFile) {
         if (targets.contains(outputFile.getGeneratingRule())) {
           makeEdge(outputFile, outputFile.getGeneratingRule());
         }
-      } else if (target instanceof Rule) {
-        Rule rule = (Rule) target;
+      } else if (target instanceof Rule rule) {
         for (Label label : rule.getSortedLabels(dependencyFilter)) {
           if (!packages.contains(label.getPackageIdentifier())) {
             continue; // don't cause additional package loading
@@ -448,7 +446,7 @@ public class BlazeQueryEnvironment extends AbstractBlazeQueryEnvironment<Target>
     // being called from within a SkyFunction.
     resolvedTargetPatterns.putAll(
         targetPatternPreloader.preloadTargetPatterns(
-            eventHandler, mainRepoTargetParser, patterns, keepGoing));
+            eventHandler, targetParser, patterns, keepGoing));
   }
 
   @Override

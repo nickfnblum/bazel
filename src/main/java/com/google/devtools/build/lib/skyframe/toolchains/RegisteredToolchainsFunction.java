@@ -17,12 +17,16 @@ package com.google.devtools.build.lib.skyframe.toolchains;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.HashBasedTable;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableTable;
+import com.google.common.collect.Table;
 import com.google.devtools.build.lib.actions.ActionLookupKey;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.ConfiguredTargetValue;
 import com.google.devtools.build.lib.analysis.PlatformConfiguration;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
+import com.google.devtools.build.lib.analysis.config.InvalidConfigurationException;
 import com.google.devtools.build.lib.analysis.platform.DeclaredToolchainInfo;
 import com.google.devtools.build.lib.analysis.platform.PlatformProviderUtils;
 import com.google.devtools.build.lib.bazel.bzlmod.BazelDepGraphValue;
@@ -54,6 +58,7 @@ import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import com.google.devtools.build.skyframe.SkyframeLookupResult;
 import java.util.List;
+import java.util.function.Consumer;
 import javax.annotation.Nullable;
 import net.starlark.java.eval.StarlarkSemantics;
 
@@ -67,9 +72,9 @@ public class RegisteredToolchainsFunction implements SkyFunction {
   public SkyValue compute(SkyKey skyKey, Environment env)
       throws SkyFunctionException, InterruptedException {
     StarlarkSemantics starlarkSemantics = PrecomputedValue.STARLARK_SEMANTICS.get(env);
+    RegisteredToolchainsValue.Key key = (RegisteredToolchainsValue.Key) skyKey;
     BuildConfigurationValue configuration =
-        (BuildConfigurationValue)
-            env.getValue(((RegisteredToolchainsValue.Key) skyKey).getConfigurationKey());
+        (BuildConfigurationValue) env.getValue(key.getConfigurationKey());
     RepositoryMappingValue mainRepoMapping =
         (RepositoryMappingValue) env.getValue(RepositoryMappingValue.key(RepositoryName.MAIN));
     if (env.valuesMissing()) {
@@ -78,9 +83,7 @@ public class RegisteredToolchainsFunction implements SkyFunction {
 
     TargetPattern.Parser mainRepoParser =
         new TargetPattern.Parser(
-            PathFragment.EMPTY_FRAGMENT,
-            RepositoryName.MAIN,
-            mainRepoMapping.getRepositoryMapping());
+            PathFragment.EMPTY_FRAGMENT, RepositoryName.MAIN, mainRepoMapping.repositoryMapping());
     ImmutableList.Builder<SignedTargetPattern> targetPatternBuilder = new ImmutableList.Builder<>();
 
     // Get the toolchains from the configuration.
@@ -149,7 +152,32 @@ public class RegisteredToolchainsFunction implements SkyFunction {
       return null;
     }
 
-    return RegisteredToolchainsValue.create(registeredToolchains);
+    // Check which toolchains are valid according to their configuration.
+    ImmutableList.Builder<DeclaredToolchainInfo> validToolchains = new ImmutableList.Builder<>();
+    // Some toolchains end up with repeated reasons, so use a HashBasedTable to handle duplicates.
+    Table<Label, Label, String> rejectedToolchains = key.debug() ? HashBasedTable.create() : null;
+    for (DeclaredToolchainInfo toolchain : registeredToolchains) {
+      try {
+        Consumer<String> errorHandler =
+            key.debug()
+                ? message ->
+                    rejectedToolchains.put(
+                        toolchain.toolchainType().typeLabel(), toolchain.toolchainLabel(), message)
+                : null;
+        if (ConfigMatchingUtil.validate(
+            toolchain.toolchainLabel(), toolchain.targetSettings(), errorHandler)) {
+          validToolchains.add(toolchain);
+        }
+      } catch (InvalidConfigurationException e) {
+        throw new RegisteredToolchainsFunctionException(
+            new InvalidToolchainLabelException(toolchain.toolchainLabel(), e),
+            Transience.PERSISTENT);
+      }
+    }
+
+    return RegisteredToolchainsValue.create(
+        validToolchains.build(),
+        rejectedToolchains != null ? ImmutableTable.copyOf(rejectedToolchains) : null);
   }
 
   /**
@@ -199,7 +227,7 @@ public class RegisteredToolchainsFunction implements SkyFunction {
       TargetPattern.Parser parser =
           new TargetPattern.Parser(
               PathFragment.EMPTY_FRAGMENT,
-              module.getCanonicalRepoName(),
+              bazelDepGraphValue.getCanonicalRepoNameLookup().inverse().get(module.getKey()),
               bazelDepGraphValue.getFullRepoMapping(module.getKey()));
       for (String pattern : module.getToolchainsToRegister()) {
         try {
@@ -271,10 +299,6 @@ public class RegisteredToolchainsFunction implements SkyFunction {
               "target does not provide the DeclaredToolchainInfo provider"));
     }
 
-    public InvalidToolchainLabelException(Label invalidLabel, String reason) {
-      super(formatMessage(invalidLabel.getCanonicalForm(), reason));
-    }
-
     public InvalidToolchainLabelException(TargetPatternUtil.InvalidTargetPatternException e) {
       this(e.getInvalidPattern(), e.getTpe());
     }
@@ -284,6 +308,10 @@ public class RegisteredToolchainsFunction implements SkyFunction {
     }
 
     public InvalidToolchainLabelException(Label invalidLabel, ConfiguredValueCreationException e) {
+      super(formatMessage(invalidLabel.getCanonicalForm(), e.getMessage()), e);
+    }
+
+    public InvalidToolchainLabelException(Label invalidLabel, InvalidConfigurationException e) {
       super(formatMessage(invalidLabel.getCanonicalForm(), e.getMessage()), e);
     }
 

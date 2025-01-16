@@ -27,11 +27,15 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.eventbus.EventBus;
 import com.google.devtools.build.lib.actions.Action;
+import com.google.devtools.build.lib.actions.ActionAnalysisMetadata;
 import com.google.devtools.build.lib.actions.ActionCompletionEvent;
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.ActionInputHelper;
+import com.google.devtools.build.lib.actions.ActionLookupKey;
+import com.google.devtools.build.lib.actions.ActionLookupValue;
 import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.Artifact.DerivedArtifact;
 import com.google.devtools.build.lib.actions.ArtifactRoot;
 import com.google.devtools.build.lib.actions.ArtifactRoot.RootType;
 import com.google.devtools.build.lib.actions.DiscoveredInputsEvent;
@@ -44,6 +48,7 @@ import com.google.devtools.build.lib.actions.SpawnMetrics;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.SpawnResult.Status;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
+import com.google.devtools.build.lib.actions.util.ActionsTestUtil.MockAction;
 import com.google.devtools.build.lib.bugreport.BugReporter;
 import com.google.devtools.build.lib.buildtool.BuildResult;
 import com.google.devtools.build.lib.buildtool.BuildResult.BuildToolLogCollection;
@@ -51,12 +56,17 @@ import com.google.devtools.build.lib.buildtool.buildevent.BuildCompleteEvent;
 import com.google.devtools.build.lib.clock.BlazeClock;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
+import com.google.devtools.build.lib.exec.util.FakeActionInputFileCache;
 import com.google.devtools.build.lib.exec.util.FakeOwner;
 import com.google.devtools.build.lib.exec.util.SpawnBuilder;
 import com.google.devtools.build.lib.runtime.ExecutionGraphModule.ActionDumpWriter;
 import com.google.devtools.build.lib.runtime.ExecutionGraphModule.DependencyInfo;
 import com.google.devtools.build.lib.testutil.FoundationTestCase;
+import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.skyframe.SkyKey;
+import com.google.devtools.build.skyframe.SkyValue;
+import com.google.devtools.build.skyframe.WalkableGraph;
 import com.google.testing.junit.testparameterinjector.TestParameter;
 import com.google.testing.junit.testparameterinjector.TestParameterInjector;
 import java.io.ByteArrayInputStream;
@@ -65,7 +75,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.time.Instant;
+import java.util.Map;
 import java.util.UUID;
+import javax.annotation.Nullable;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -101,7 +113,7 @@ public class ExecutionGraphModuleTest extends FoundationTestCase {
   }
 
   @Test
-  public void testOneSpawn() throws IOException {
+  public void testOneSpawn() throws Exception {
     UUID uuid = UUID.randomUUID();
     ByteArrayOutputStream buffer = new ByteArrayOutputStream();
     Spawn spawn =
@@ -128,7 +140,8 @@ public class ExecutionGraphModuleTest extends FoundationTestCase {
             .build();
     startLogging(eventBus, uuid, buffer, DependencyInfo.NONE);
     Instant startTimeInstant = Instant.now();
-    module.spawnExecuted(new SpawnExecutedEvent(spawn, result, startTimeInstant));
+    module.spawnExecuted(
+        new SpawnExecutedEvent(spawn, new FakeActionInputFileCache(), result, startTimeInstant));
     module.buildComplete(
         new BuildCompleteEvent(new BuildResult(startTimeInstant.toEpochMilli() + 1000)));
 
@@ -146,7 +159,7 @@ public class ExecutionGraphModuleTest extends FoundationTestCase {
   }
 
   @Test
-  public void testSpawnWithDiscoverInputs() throws IOException {
+  public void testSpawnWithDiscoverInputs() throws Exception {
     UUID uuid = UUID.randomUUID();
     ByteArrayOutputStream buffer = new ByteArrayOutputStream();
     Spawn spawn =
@@ -179,7 +192,8 @@ public class ExecutionGraphModuleTest extends FoundationTestCase {
             SpawnMetrics.Builder.forOtherExec().setParseTimeInMs(987).setTotalTimeInMs(987).build(),
             new ActionsTestUtil.NullAction(createOutputArtifact("output/foo/out")),
             0));
-    module.spawnExecuted(new SpawnExecutedEvent(spawn, result, startTimeInstant));
+    module.spawnExecuted(
+        new SpawnExecutedEvent(spawn, new FakeActionInputFileCache(), result, startTimeInstant));
     module.buildComplete(
         new BuildCompleteEvent(new BuildResult(startTimeInstant.toEpochMilli() + 1000)));
 
@@ -194,7 +208,7 @@ public class ExecutionGraphModuleTest extends FoundationTestCase {
   }
 
   @Test
-  public void actionDepsWithThreeSpawns() throws IOException {
+  public void actionDepsWithThreeSpawns() throws Exception {
     UUID uuid = UUID.randomUUID();
     ByteArrayOutputStream buffer = new ByteArrayOutputStream();
 
@@ -246,9 +260,14 @@ public class ExecutionGraphModuleTest extends FoundationTestCase {
             .build();
     startLogging(eventBus, uuid, buffer, DependencyInfo.ALL);
     Instant startTimeInstant = Instant.now();
-    module.spawnExecuted(new SpawnExecutedEvent(spawnOut1, result, startTimeInstant));
-    module.spawnExecuted(new SpawnExecutedEvent(spawnOut2, result, startTimeInstant));
-    module.spawnExecuted(new SpawnExecutedEvent(spawnTop, result, startTimeInstant));
+    module.spawnExecuted(
+        new SpawnExecutedEvent(
+            spawnOut1, new FakeActionInputFileCache(), result, startTimeInstant));
+    module.spawnExecuted(
+        new SpawnExecutedEvent(
+            spawnOut2, new FakeActionInputFileCache(), result, startTimeInstant));
+    module.spawnExecuted(
+        new SpawnExecutedEvent(spawnTop, new FakeActionInputFileCache(), result, startTimeInstant));
     module.buildComplete(
         new BuildCompleteEvent(new BuildResult(startTimeInstant.plusMillis(1000).toEpochMilli())));
 
@@ -263,6 +282,151 @@ public class ExecutionGraphModuleTest extends FoundationTestCase {
 
     assertThat(nodes.get(2).getIndex()).isEqualTo(2);
     assertThat(nodes.get(2).getDependentIndexList()).containsExactly(0, 1);
+  }
+
+  @Test
+  public void changePruning_hasEdgesToPrunedSpawn() throws Exception {
+    UUID uuid = UUID.randomUUID();
+    ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+
+    var out1 = createOutputArtifact("foo/out1");
+    var out2 = (DerivedArtifact) createOutputArtifact("foo/out2");
+    var out3 = createOutputArtifact("foo/out3");
+
+    Spawn spawnOut1 =
+        new SimpleSpawn(
+            new FakeOwnerWithPrimaryOutput(
+                "Mnemonic", "Progress message", "//foo1", out1.getExecPathString()),
+            ImmutableList.of("cmd"),
+            ImmutableMap.of("env", "value"),
+            ImmutableMap.of("exec", "value"),
+            /* inputs= */ NestedSetBuilder.emptySet(Order.STABLE_ORDER),
+            /* outputs= */ ImmutableSet.of(out1),
+            ResourceSet.ZERO);
+    var actionOut2 = new MockAction(ImmutableList.of(out1), ImmutableSet.of(out2));
+    Spawn spawnOut2 =
+        new SimpleSpawn(
+            actionOut2,
+            ImmutableList.of("cmd"),
+            ImmutableMap.of("env", "value"),
+            ImmutableMap.of("exec", "value"),
+            /* inputs= */ NestedSetBuilder.create(Order.STABLE_ORDER, out1),
+            /* outputs= */ ImmutableSet.of(out2),
+            ResourceSet.ZERO);
+    Spawn spawnOut3 =
+        new SimpleSpawn(
+            new FakeOwnerWithPrimaryOutput(
+                "Mnemonic", "Progress message", "//foo3", out3.getExecPathString()),
+            ImmutableList.of("cmd"),
+            ImmutableMap.of("env", "value"),
+            ImmutableMap.of("exec", "value"),
+            /* inputs= */ NestedSetBuilder.create(Order.COMPILE_ORDER, out2),
+            /* outputs= */ ImmutableSet.of(out3),
+            ResourceSet.ZERO);
+    SpawnResult result =
+        new SpawnResult.Builder()
+            .setRunnerName("local")
+            .setStatus(Status.SUCCESS)
+            .setExitCode(0)
+            .setSpawnMetrics(
+                SpawnMetrics.Builder.forLocalExec()
+                    .setTotalTimeInMs(1234)
+                    .setExecutionWallTimeInMs(2345)
+                    .setProcessOutputsTimeInMs(3456)
+                    .build())
+            .build();
+    startLogging(
+        eventBus,
+        BugReporter.defaultInstance(),
+        /* localLockFreeOutputEnabled= */ false,
+        /* logFileWriteEdges= */ false,
+        uuid,
+        buffer,
+        DependencyInfo.ALL,
+        new WalkableGraph() {
+          @Override
+          public SkyValue getValue(SkyKey key) throws InterruptedException {
+            if (key instanceof ActionLookupKey) {
+              return new ActionLookupValue() {
+                @Override
+                public ImmutableList<ActionAnalysisMetadata> getActions() {
+                  return ImmutableList.of(actionOut2);
+                }
+              };
+            }
+            throw new UnsupportedOperationException();
+          }
+
+          @Override
+          public Map<SkyKey, SkyValue> getSuccessfulValues(Iterable<? extends SkyKey> keys)
+              throws InterruptedException {
+            throw new UnsupportedOperationException();
+          }
+
+          @Override
+          public Map<SkyKey, Exception> getMissingAndExceptions(Iterable<SkyKey> keys)
+              throws InterruptedException {
+            throw new UnsupportedOperationException();
+          }
+
+          @Nullable
+          @Override
+          public Exception getException(SkyKey key) throws InterruptedException {
+            throw new UnsupportedOperationException();
+          }
+
+          @Override
+          public boolean isCycle(SkyKey key) throws InterruptedException {
+            throw new UnsupportedOperationException();
+          }
+
+          @Override
+          public Map<SkyKey, Iterable<SkyKey>> getDirectDeps(Iterable<SkyKey> keys)
+              throws InterruptedException {
+            throw new UnsupportedOperationException();
+          }
+
+          @Override
+          public Iterable<SkyKey> getDirectDeps(SkyKey key) throws InterruptedException {
+            throw new UnsupportedOperationException();
+          }
+
+          @Override
+          public Map<SkyKey, Iterable<SkyKey>> getReverseDeps(Iterable<? extends SkyKey> keys)
+              throws InterruptedException {
+            throw new UnsupportedOperationException();
+          }
+
+          @Override
+          public Map<SkyKey, Pair<SkyValue, Iterable<SkyKey>>> getValueAndRdeps(
+              Iterable<SkyKey> keys) throws InterruptedException {
+            throw new UnsupportedOperationException();
+          }
+        });
+    Instant startTimeInstant = Instant.now();
+    module.spawnExecuted(
+        new SpawnExecutedEvent(
+            spawnOut1, new FakeActionInputFileCache(), result, startTimeInstant));
+    // spawnOut2 is change pruned.
+    var unused = spawnOut2;
+    module.spawnExecuted(
+        new SpawnExecutedEvent(
+            spawnOut3, new FakeActionInputFileCache(), result, startTimeInstant));
+    module.buildComplete(
+        new BuildCompleteEvent(new BuildResult(startTimeInstant.plusMillis(1000).toEpochMilli())));
+
+    ImmutableList<ExecutionGraph.Node> nodes = parse(buffer);
+    assertThat(nodes).hasSize(3);
+
+    assertThat(nodes.get(0).getTargetLabel()).isEqualTo("//foo1:foo1");
+    assertThat(nodes.get(0).getIndex()).isEqualTo(0);
+    assertThat(nodes.get(0).getDependentIndexList()).isEmpty();
+
+    assertThat(nodes.get(1).getTargetLabel()).isEqualTo("//null/action:owner");
+    assertThat(nodes.get(1).getDependentIndexList()).containsExactly(nodes.get(0).getIndex());
+
+    assertThat(nodes.get(2).getTargetLabel()).isEqualTo("//foo3:foo3");
+    assertThat(nodes.get(2).getDependentIndexList()).containsExactly(nodes.get(1).getIndex());
   }
 
   private enum FailingOutputStreamFactory {
@@ -306,7 +470,8 @@ public class ExecutionGraphModuleTest extends FoundationTestCase {
             OutputStream.nullOutputStream(),
             uuid,
             DependencyInfo.NONE,
-            -1) {
+            -1,
+            /* graph= */ null) {
           @Override
           protected void updateLogs(BuildToolLogCollection logs) {}
 
@@ -331,7 +496,8 @@ public class ExecutionGraphModuleTest extends FoundationTestCase {
         /* logFileWriteEdges= */ false,
         uuid,
         buffer,
-        depType);
+        depType,
+        /* graph= */ null);
   }
 
   private void startLogging(
@@ -341,10 +507,18 @@ public class ExecutionGraphModuleTest extends FoundationTestCase {
       boolean logFileWriteEdges,
       UUID uuid,
       OutputStream buffer,
-      DependencyInfo depType) {
+      DependencyInfo depType,
+      @Nullable WalkableGraph graph) {
     ActionDumpWriter writer =
         new ActionDumpWriter(
-            bugReporter, localLockFreeOutputEnabled, logFileWriteEdges, buffer, uuid, depType, -1) {
+            bugReporter,
+            localLockFreeOutputEnabled,
+            logFileWriteEdges,
+            buffer,
+            uuid,
+            depType,
+            -1,
+            graph) {
           @Override
           protected void updateLogs(BuildToolLogCollection logs) {}
         };
@@ -361,7 +535,7 @@ public class ExecutionGraphModuleTest extends FoundationTestCase {
   }
 
   @Test
-  public void testSpawnWithNullOwnerLabel() throws IOException {
+  public void testSpawnWithNullOwnerLabel() throws Exception {
     UUID uuid = UUID.randomUUID();
     ByteArrayOutputStream buffer = new ByteArrayOutputStream();
     Spawn spawn =
@@ -393,7 +567,8 @@ public class ExecutionGraphModuleTest extends FoundationTestCase {
             .build();
     startLogging(eventBus, uuid, buffer, DependencyInfo.NONE);
     Instant startTimeInstant = Instant.now();
-    module.spawnExecuted(new SpawnExecutedEvent(spawn, result, startTimeInstant));
+    module.spawnExecuted(
+        new SpawnExecutedEvent(spawn, new FakeActionInputFileCache(), result, startTimeInstant));
     module.buildComplete(
         new BuildCompleteEvent(new BuildResult(startTimeInstant.toEpochMilli() + 1000)));
 
@@ -406,17 +581,20 @@ public class ExecutionGraphModuleTest extends FoundationTestCase {
   public void spawnAndAction_withSameOutputs() throws Exception {
     var buffer = new ByteArrayOutputStream();
     startLogging(eventBus, UUID.randomUUID(), buffer, DependencyInfo.ALL);
-    var options = new ExecutionGraphModule.ExecutionGraphOptions();
-    module.setOptions(options);
 
     module.spawnExecuted(
         new SpawnExecutedEvent(
             new SpawnBuilder().withOwnerPrimaryOutput(createOutputArtifact("foo/out")).build(),
+            new FakeActionInputFileCache(),
             createRemoteSpawnResult(200),
             Instant.ofEpochMilli(100)));
     module.actionComplete(
         new ActionCompletionEvent(
-            0, 0, new ActionsTestUtil.NullAction(createOutputArtifact("foo/out")), null));
+            0,
+            0,
+            new ActionsTestUtil.NullAction(createOutputArtifact("foo/out")),
+            new FakeActionInputFileCache(),
+            null));
     module.buildComplete(new BuildCompleteEvent(new BuildResult(1000)));
 
     assertThat(parse(buffer))
@@ -437,18 +615,18 @@ public class ExecutionGraphModuleTest extends FoundationTestCase {
   public void spawnAndAction_withDifferentOutputs() throws Exception {
     var buffer = new ByteArrayOutputStream();
     startLogging(eventBus, UUID.randomUUID(), buffer, DependencyInfo.ALL);
-    var options = new ExecutionGraphModule.ExecutionGraphOptions();
-    module.setOptions(options);
     var nanosToMillis = BlazeClock.createNanosToMillisSinceEpochConverter();
     module.setNanosToMillis(nanosToMillis);
 
     module.spawnExecuted(
         new SpawnExecutedEvent(
             new SpawnBuilder().withOwnerPrimaryOutput(createOutputArtifact("foo/out")).build(),
+            new FakeActionInputFileCache(),
             createRemoteSpawnResult(200),
             Instant.ofEpochMilli(100)));
     var action = new ActionsTestUtil.NullAction(createOutputArtifact("bar/out"));
-    module.actionComplete(new ActionCompletionEvent(0, 0, action, null));
+    module.actionComplete(
+        new ActionCompletionEvent(0, 0, action, new FakeActionInputFileCache(), null));
     module.buildComplete(new BuildCompleteEvent(new BuildResult(1000)));
 
     assertThat(parse(buffer))
@@ -473,6 +651,30 @@ public class ExecutionGraphModuleTest extends FoundationTestCase {
   }
 
   @Test
+  public void noSpawnAction_hasCorrectDuration() throws Exception {
+    var buffer = new ByteArrayOutputStream();
+    startLogging(eventBus, UUID.randomUUID(), buffer, DependencyInfo.ALL);
+    var nanosToMillis = BlazeClock.createNanosToMillisSinceEpochConverter();
+    module.setNanosToMillis(nanosToMillis);
+
+    var action = new ActionsTestUtil.NullAction(createOutputArtifact("foo/out"));
+    module.actionComplete(
+        new ActionCompletionEvent(1000000, 2000000, action, new FakeActionInputFileCache(), null));
+    module.buildComplete(new BuildCompleteEvent(new BuildResult(1000)));
+
+    assertThat(parse(buffer))
+        .containsExactly(
+            executionGraphNodeBuilderForAction(action)
+                .setMetrics(
+                    ExecutionGraph.Metrics.newBuilder()
+                        .setStartTimestampMillis(nanosToMillis.toEpochMillis(1000000))
+                        .setDurationMillis(1)
+                        .setProcessMillis(1))
+                .setRuleClass("dummy-kind")
+                .build());
+  }
+
+  @Test
   public void multipleSpawnsWithSameOutput_recordsBothSpawnsWithRetry() throws Exception {
     var buffer = new ByteArrayOutputStream();
     startLogging(eventBus, UUID.randomUUID(), buffer, DependencyInfo.ALL);
@@ -481,8 +683,11 @@ public class ExecutionGraphModuleTest extends FoundationTestCase {
     Spawn spawn =
         new SpawnBuilder().withOwnerPrimaryOutput(createOutputArtifact("foo/out")).build();
 
-    module.spawnExecuted(new SpawnExecutedEvent(spawn, localResult, Instant.EPOCH));
-    module.spawnExecuted(new SpawnExecutedEvent(spawn, remoteResult, Instant.ofEpochMilli(100)));
+    module.spawnExecuted(
+        new SpawnExecutedEvent(spawn, new FakeActionInputFileCache(), localResult, Instant.EPOCH));
+    module.spawnExecuted(
+        new SpawnExecutedEvent(
+            spawn, new FakeActionInputFileCache(), remoteResult, Instant.ofEpochMilli(100)));
     module.buildComplete(new BuildCompleteEvent(new BuildResult(1000)));
 
     ImmutableList<ExecutionGraph.Node> nodes = parse(buffer);
@@ -511,13 +716,13 @@ public class ExecutionGraphModuleTest extends FoundationTestCase {
   }
 
   enum LocalLockFreeOutput {
-    LOCAL_LOCK_FREE_OUTPUT_ENABLED(/*optionValue=*/ true) {
+    LOCAL_LOCK_FREE_OUTPUT_ENABLED(/* optionValue= */ true) {
       @Override
       void assertBugReport(BugReporter bugReporter) {
         verify(bugReporter, never()).sendNonFatalBugReport(any());
       }
     },
-    LOCAL_LOCK_FREE_OUTPUT_DISABLED(/*optionValue=*/ false) {
+    LOCAL_LOCK_FREE_OUTPUT_DISABLED(/* optionValue= */ false) {
       @Override
       void assertBugReport(BugReporter bugReporter) {
         var captor = ArgumentCaptor.forClass(Exception.class);
@@ -549,14 +754,18 @@ public class ExecutionGraphModuleTest extends FoundationTestCase {
         /* logFileWriteEdges= */ false,
         UUID.randomUUID(),
         buffer,
-        DependencyInfo.ALL);
+        DependencyInfo.ALL,
+        /* graph= */ null);
     SpawnResult localResult = createLocalSpawnResult(100);
     SpawnResult remoteResult = createRemoteSpawnResult(200);
     Spawn spawn =
         new SpawnBuilder().withOwnerPrimaryOutput(createOutputArtifact("foo/out")).build();
 
-    module.spawnExecuted(new SpawnExecutedEvent(spawn, localResult, Instant.EPOCH));
-    module.spawnExecuted(new SpawnExecutedEvent(spawn, remoteResult, Instant.ofEpochMilli(10)));
+    module.spawnExecuted(
+        new SpawnExecutedEvent(spawn, new FakeActionInputFileCache(), localResult, Instant.EPOCH));
+    module.spawnExecuted(
+        new SpawnExecutedEvent(
+            spawn, new FakeActionInputFileCache(), remoteResult, Instant.ofEpochMilli(10)));
     module.buildComplete(new BuildCompleteEvent(new BuildResult(1000)));
 
     ImmutableList<ExecutionGraph.Node> nodes = parse(buffer);
@@ -595,7 +804,8 @@ public class ExecutionGraphModuleTest extends FoundationTestCase {
         /* logFileWriteEdges= */ false,
         UUID.randomUUID(),
         buffer,
-        DependencyInfo.ALL);
+        DependencyInfo.ALL,
+        /* graph= */ null);
     SpawnResult localResult = createLocalSpawnResult(100);
     SpawnResult remoteResult = createRemoteSpawnResult(200);
     Artifact input = createOutputArtifact("foo/input");
@@ -607,10 +817,17 @@ public class ExecutionGraphModuleTest extends FoundationTestCase {
             .build();
     SpawnResult dependentResult = createRemoteSpawnResult(300);
 
-    module.spawnExecuted(new SpawnExecutedEvent(spawn, localResult, Instant.EPOCH));
-    module.spawnExecuted(new SpawnExecutedEvent(spawn, remoteResult, Instant.ofEpochMilli(10)));
     module.spawnExecuted(
-        new SpawnExecutedEvent(dependentSpawn, dependentResult, Instant.ofEpochMilli(300)));
+        new SpawnExecutedEvent(spawn, new FakeActionInputFileCache(), localResult, Instant.EPOCH));
+    module.spawnExecuted(
+        new SpawnExecutedEvent(
+            spawn, new FakeActionInputFileCache(), remoteResult, Instant.ofEpochMilli(10)));
+    module.spawnExecuted(
+        new SpawnExecutedEvent(
+            dependentSpawn,
+            new FakeActionInputFileCache(),
+            dependentResult,
+            Instant.ofEpochMilli(300)));
     module.buildComplete(new BuildCompleteEvent(new BuildResult(1000)));
 
     ImmutableList<ExecutionGraph.Node> nodes = parse(buffer);
@@ -665,8 +882,12 @@ public class ExecutionGraphModuleTest extends FoundationTestCase {
   }
 
   private Artifact createOutputArtifact(String rootRelativePath) {
-    return ActionsTestUtil.createArtifactWithExecPath(
-        artifactRoot, artifactRoot.getExecPath().getRelative(rootRelativePath));
+    var artifact =
+        (DerivedArtifact)
+            ActionsTestUtil.createArtifactWithExecPath(
+                artifactRoot, artifactRoot.getExecPath().getRelative(rootRelativePath));
+    artifact.setGeneratingActionKey(ActionsTestUtil.NULL_ACTION_LOOKUP_DATA);
+    return artifact;
   }
 
   private SpawnResult createLocalSpawnResult(int totalTimeInMs) {

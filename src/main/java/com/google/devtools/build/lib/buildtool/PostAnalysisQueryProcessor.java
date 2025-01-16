@@ -13,8 +13,12 @@
 // limitations under the License.
 package com.google.devtools.build.lib.buildtool;
 
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
+
+import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.analysis.AnalysisResult;
 import com.google.devtools.build.lib.analysis.ViewCreationFailedException;
+import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.buildtool.BuildTool.ExitException;
 import com.google.devtools.build.lib.cmdline.TargetPattern;
 import com.google.devtools.build.lib.events.Event;
@@ -22,6 +26,7 @@ import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
 import com.google.devtools.build.lib.query2.NamedThreadSafeOutputFormatterCallback;
 import com.google.devtools.build.lib.query2.PostAnalysisQueryEnvironment;
 import com.google.devtools.build.lib.query2.PostAnalysisQueryEnvironment.TopLevelConfigurations;
+import com.google.devtools.build.lib.query2.common.CommonQueryOptions;
 import com.google.devtools.build.lib.query2.engine.QueryEvalResult;
 import com.google.devtools.build.lib.query2.engine.QueryException;
 import com.google.devtools.build.lib.query2.engine.QueryExpression;
@@ -42,7 +47,9 @@ import com.google.devtools.build.skyframe.WalkableGraph;
 import com.google.devtools.common.options.OptionsParsingException;
 import java.io.IOException;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.Set;
+import java.util.function.Function;
 
 /**
  * Version of {@link BuildTool} that handles all work for queries based on results from the analysis
@@ -84,7 +91,7 @@ public abstract class PostAnalysisQueryProcessor<T> implements BuildTool.Analysi
       }
 
       try (QueryRuntimeHelper queryRuntimeHelper =
-          env.getRuntime().getQueryRuntimeHelperFactory().create(env)) {
+          env.getRuntime().getQueryRuntimeHelperFactory().create(env, getQueryOptions(env))) {
         doPostAnalysisQuery(
             request,
             env,
@@ -125,13 +132,26 @@ public abstract class PostAnalysisQueryProcessor<T> implements BuildTool.Analysi
     }
   }
 
+  protected abstract CommonQueryOptions getQueryOptions(CommandEnvironment env);
+
   protected abstract PostAnalysisQueryEnvironment<T> getQueryEnvironment(
       BuildRequest request,
       CommandEnvironment env,
       TopLevelConfigurations topLevelConfigurations,
-      Collection<SkyKey> transitiveConfigurationKeys,
+      ImmutableMap<String, BuildConfigurationValue> transitiveConfigurations,
       WalkableGraph walkableGraph)
       throws InterruptedException;
+
+  private static ImmutableMap<String, BuildConfigurationValue> getTransitiveConfigurations(
+      Collection<SkyKey> transitiveConfigurationKeys, WalkableGraph graph)
+      throws InterruptedException {
+    // BuildConfigurationKey and BuildConfigurationValue should be 1:1
+    // so merge function intentionally omitted
+    return graph.getSuccessfulValues(transitiveConfigurationKeys).values().stream()
+        .map(BuildConfigurationValue.class::cast)
+        .sorted(Comparator.comparing(BuildConfigurationValue::checksum))
+        .collect(toImmutableMap(BuildConfigurationValue::checksum, Function.identity()));
+  }
 
   private void doPostAnalysisQuery(
       BuildRequest request,
@@ -145,14 +165,12 @@ public abstract class PostAnalysisQueryProcessor<T> implements BuildTool.Analysi
           OptionsParsingException {
     WalkableGraph walkableGraph =
         SkyframeExecutorWrappingWalkableGraph.of(env.getSkyframeExecutor());
+    ImmutableMap<String, BuildConfigurationValue> transitiveConfigurations =
+        getTransitiveConfigurations(transitiveConfigurationKeys, walkableGraph);
 
     PostAnalysisQueryEnvironment<T> postAnalysisQueryEnvironment =
         getQueryEnvironment(
-            request,
-            env,
-            topLevelConfigurations,
-            transitiveConfigurationKeys,
-            walkableGraph);
+            request, env, topLevelConfigurations, transitiveConfigurations, walkableGraph);
 
     Iterable<NamedThreadSafeOutputFormatterCallback<T>> callbacks =
         postAnalysisQueryEnvironment.getDefaultOutputFormatters(

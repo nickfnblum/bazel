@@ -37,8 +37,6 @@ import com.google.devtools.build.lib.util.VarInt;
 import com.google.devtools.build.lib.vfs.DigestUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
-import com.google.devtools.build.lib.vfs.SyscallCache;
-import com.google.devtools.build.lib.vfs.UnixGlob;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -78,14 +76,14 @@ public class CompactPersistentActionCache implements ActionCache {
 
   private static final int NO_INPUT_DISCOVERY_COUNT = -1;
 
-  private static final int VERSION = 16;
+  private static final int VERSION = 17;
 
   private static final class ActionMap extends PersistentMap<Integer, byte[]> {
     private final Clock clock;
     private final PersistentStringIndexer indexer;
     private long nextUpdateSecs;
 
-    public ActionMap(
+    ActionMap(
         ConcurrentMap<Integer, byte[]> map,
         PersistentStringIndexer indexer,
         Clock clock,
@@ -205,12 +203,13 @@ public class CompactPersistentActionCache implements ActionCache {
     PersistentMap<Integer, byte[]> map;
     Path cacheFile = cacheFile(cacheRoot);
     Path journalFile = journalFile(cacheRoot);
-    Path indexFile = cacheRoot.getChild("filename_index_v" + VERSION + ".blaze");
+    Path indexFile = indexFile(cacheRoot);
+    Path indexJournalFile = indexJournalFile(cacheRoot);
     ConcurrentMap<Integer, byte[]> backingMap = new ConcurrentHashMap<>();
 
     PersistentStringIndexer indexer;
     try {
-      indexer = PersistentStringIndexer.newPersistentStringIndexer(indexFile, clock);
+      indexer = PersistentStringIndexer.create(indexFile, indexJournalFile, clock);
     } catch (IOException e) {
       return logAndThrowOrRecurse(
           cacheRoot,
@@ -268,20 +267,18 @@ public class CompactPersistentActionCache implements ActionCache {
     if (message != null) {
       e = new IOException(message, e);
     }
-    logger.atWarning().withCause(e).log("Failed to load action cache");
+    logger.atWarning().withCause(e).log(
+        "Failed to load action cache, preexisting files kept as %s/*.bad", cacheRoot);
     reporterForInitializationErrors.handle(
         Event.error(
             "Error during action cache initialization: "
                 + e.getMessage()
-                + ". Corrupted files were renamed to '"
-                + cacheRoot
-                + "/*.bad'. "
-                + "Bazel will now reset action cache data, potentially causing rebuilds"));
+                + ". Data will be reset, potentially causing target rebuilds"));
     if (alreadyFoundCorruption) {
       throw e;
     }
     return create(
-        cacheRoot, clock, reporterForInitializationErrors, /*alreadyFoundCorruption=*/ true);
+        cacheRoot, clock, reporterForInitializationErrors, /* alreadyFoundCorruption= */ true);
   }
 
   /**
@@ -291,25 +288,22 @@ public class CompactPersistentActionCache implements ActionCache {
   private static void renameCorruptedFiles(Path cacheRoot) {
     try {
       for (Path path :
-          new UnixGlob.Builder(cacheRoot, SyscallCache.NO_CACHE)
-              .addPattern("action_*_v" + VERSION + ".*")
-              .glob()) {
-        path.renameTo(path.getParentDirectory().getChild(path.getBaseName() + ".bad"));
+          ImmutableList.of(
+              cacheFile(cacheRoot),
+              journalFile(cacheRoot),
+              indexFile(cacheRoot),
+              indexJournalFile(cacheRoot))) {
+        if (path.exists()) {
+          path.renameTo(path.getParentDirectory().getChild(path.getBaseName() + ".bad"));
+        }
       }
-      for (Path path :
-          new UnixGlob.Builder(cacheRoot, SyscallCache.NO_CACHE)
-              .addPattern("filename_*_v" + VERSION + ".*")
-              .glob()) {
-        path.renameTo(path.getParentDirectory().getChild(path.getBaseName() + ".bad"));
-      }
-    } catch (UnixGlob.BadPattern ex) {
-      throw new IllegalStateException(ex); // can't happen
     } catch (IOException e) {
       logger.atWarning().withCause(e).log("Unable to rename corrupted action cache files");
     }
   }
 
   private static final String FAILURE_PREFIX = "Failed action cache referential integrity check: ";
+
   /** Throws IOException if indexer contains no data or integrity check has failed. */
   private static void validateIntegrity(int indexerSize, byte[] validationRecord)
       throws IOException {
@@ -336,18 +330,26 @@ public class CompactPersistentActionCache implements ActionCache {
   }
 
   public static Path cacheFile(Path cacheRoot) {
-    return cacheRoot.getChild("action_cache_v" + VERSION + ".blaze");
+    return cacheRoot.getChild("action_cache.blaze");
   }
 
   public static Path journalFile(Path cacheRoot) {
-    return cacheRoot.getChild("action_journal_v" + VERSION + ".blaze");
+    return cacheRoot.getChild("action_journal.blaze");
+  }
+
+  public static Path indexFile(Path cacheRoot) {
+    return cacheRoot.getChild("filename_index.blaze");
+  }
+
+  public static Path indexJournalFile(Path cacheRoot) {
+    return cacheRoot.getChild("filename_index_journal.blaze");
   }
 
   @Override
   @Nullable
   public ActionCache.Entry get(String key) {
-    int index = indexer.getIndex(key);
-    if (index < 0) {
+    Integer index = indexer.getIndex(key);
+    if (index == null) {
       return null;
     }
     byte[] data = map.get(index);
@@ -366,7 +368,7 @@ public class CompactPersistentActionCache implements ActionCache {
   @Override
   public void put(String key, ActionCache.Entry entry) {
     // Encode record. Note that both methods may create new mappings in the indexer.
-    int index = indexer.getOrCreateIndex(key);
+    Integer index = indexer.getOrCreateIndex(key);
     byte[] content;
     try {
       content = encode(indexer, entry);
@@ -391,7 +393,10 @@ public class CompactPersistentActionCache implements ActionCache {
 
   @Override
   public void remove(String key) {
-    map.remove(indexer.getIndex(key));
+    Integer index = indexer.getIndex(key);
+    if (index != null) {
+      map.remove(index);
+    }
   }
 
   @Override
@@ -483,6 +488,15 @@ public class CompactPersistentActionCache implements ActionCache {
     }
   }
 
+  /**
+   * Returns the number of entries in the backing map. If non-zero, it means that the map has been
+   * initialized and contains the validation record.
+   */
+  @Override
+  public int size() {
+    return map.size();
+  }
+
   private static void encodeRemoteMetadata(
       RemoteFileArtifactValue value, StringIndexer indexer, ByteArrayOutputStream sink)
       throws IOException {
@@ -530,11 +544,17 @@ public class CompactPersistentActionCache implements ActionCache {
           PathFragment.create(getStringForIndex(indexer, VarInt.getVarInt(source)));
     }
 
-    return RemoteFileArtifactValue.create(
+    if (expireAtEpochMilli < 0 && materializationExecPath == null) {
+      return RemoteFileArtifactValue.create(digest, size, locationIndex);
+    }
+
+    return RemoteFileArtifactValue.createWithMaterializationData(
         digest, size, locationIndex, expireAtEpochMilli, materializationExecPath);
   }
 
-  /** @return action data encoded as a byte[] array. */
+  /**
+   * @return action data encoded as a byte[] array.
+   */
   private static byte[] encode(StringIndexer indexer, ActionCache.Entry entry) throws IOException {
     Preconditions.checkState(!entry.isCorrupted());
 
@@ -643,7 +663,7 @@ public class CompactPersistentActionCache implements ActionCache {
   }
 
   private static String getStringForIndex(StringIndexer indexer, int index) throws IOException {
-    String path = (index >= 0 ? indexer.getStringForIndex(index) : null);
+    String path = index >= 0 ? indexer.getStringForIndex(index) : null;
     if (path == null) {
       throw new IOException("Corrupted string index");
     }

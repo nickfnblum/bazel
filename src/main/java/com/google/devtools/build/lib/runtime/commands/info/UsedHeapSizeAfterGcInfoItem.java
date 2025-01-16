@@ -16,8 +16,10 @@ package com.google.devtools.build.lib.runtime.commands.info;
 
 import com.google.common.base.Supplier;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
+import com.google.devtools.build.lib.bugreport.BugReporter;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
 import com.google.devtools.build.lib.runtime.InfoItem;
+import com.google.devtools.build.lib.runtime.MemoryPressureOptions;
 import com.google.devtools.build.lib.util.HeapOffsetHelper;
 import com.google.devtools.build.lib.util.StringUtilities;
 
@@ -33,12 +35,16 @@ public final class UsedHeapSizeAfterGcInfoItem extends InfoItem {
   @Override
   public byte[] get(
       Supplier<BuildConfigurationValue> configurationSupplier, CommandEnvironment env) {
-    return print(StringUtilities.prettyPrintBytes(getHeapUsageAfterGc()));
-  }
-
-  public static long getHeapUsageAfterGc() {
     System.gc();
     // TODO: b/311665999 - Remove the subtraction of FillerArray once we figure out an alternative.
-    return InfoItemUtils.getMemoryUsage().getUsed() - HeapOffsetHelper.getSizeOfFillerArrayOnHeap();
+    return print(
+        StringUtilities.prettyPrintBytes(
+            InfoItemUtils.getMemoryUsage().getUsed()
+                - HeapOffsetHelper.getSizeOfFillerArrayOnHeap(
+                    env.getOptions()
+                        .getOptions(MemoryPressureOptions.class)
+                        .jvmHeapHistogramInternalObjectPattern
+                        .regexPattern(),
+                    BugReporter.defaultInstance())));
   }
 }

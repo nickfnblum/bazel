@@ -14,16 +14,17 @@
 
 package com.google.devtools.build.lib.bazel.rules.cpp;
 
+import static com.google.devtools.build.lib.skyframe.BzlLoadValue.keyForBuild;
+import static com.google.devtools.build.lib.skyframe.BzlLoadValue.keyForBuiltins;
+
 import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.RuleContext;
-import com.google.devtools.build.lib.analysis.RuleErrorConsumer;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.analysis.starlark.StarlarkActionFactory;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.AspectDescriptor;
 import com.google.devtools.build.lib.packages.Provider;
-import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
 import com.google.devtools.build.lib.packages.StarlarkProvider;
 import com.google.devtools.build.lib.rules.cpp.AspectLegalCppSemantics;
 import com.google.devtools.build.lib.rules.cpp.CcCommon.Language;
@@ -33,6 +34,7 @@ import com.google.devtools.build.lib.rules.cpp.CppActionNames;
 import com.google.devtools.build.lib.rules.cpp.CppCompileActionBuilder;
 import com.google.devtools.build.lib.rules.cpp.CppConfiguration;
 import com.google.devtools.build.lib.rules.cpp.CppFileTypes;
+import com.google.devtools.build.lib.rules.cpp.CppLinkActionBuilder;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.SerializationConstant;
 import net.starlark.java.eval.EvalException;
 import net.starlark.java.eval.Sequence;
@@ -52,18 +54,22 @@ public class BazelCppSemantics implements AspectLegalCppSemantics {
   // the repo name set.
   public static final Provider.Key CC_SHARED_INFO_PROVIDER_RULES_CC =
       new StarlarkProvider.Key(
-          Label.parseCanonicalUnchecked("@rules_cc//examples:experimental_cc_shared_library.bzl"),
+          keyForBuild(
+              Label.parseCanonicalUnchecked(
+                  "@rules_cc//examples:experimental_cc_shared_library.bzl")),
           "CcSharedLibraryInfo");
 
   public static final Provider.Key CC_SHARED_INFO_PROVIDER =
       new StarlarkProvider.Key(
-          Label.parseCanonicalUnchecked("//examples:experimental_cc_shared_library.bzl"),
+          keyForBuild(
+              Label.parseCanonicalUnchecked("//examples:experimental_cc_shared_library.bzl")),
           "CcSharedLibraryInfo");
 
   public static final Provider.Key CC_SHARED_INFO_PROVIDER_BUILT_INS =
       new StarlarkProvider.Key(
-          Label.parseCanonicalUnchecked(
-              "@_builtins//:common/cc/experimental_cc_shared_library.bzl"),
+          keyForBuiltins(
+              Label.parseCanonicalUnchecked(
+                  "@_builtins//:common/cc/experimental_cc_shared_library.bzl")),
           "CcSharedLibraryInfo");
 
   private final Language language;
@@ -89,9 +95,8 @@ public class BazelCppSemantics implements AspectLegalCppSemantics {
   public void finalizeCompileActionBuilder(
       BuildConfigurationValue configuration,
       FeatureConfiguration featureConfiguration,
-      CppCompileActionBuilder actionBuilder,
-      RuleErrorConsumer ruleErrorConsumer)
-      throws RuleErrorException {
+      CppCompileActionBuilder actionBuilder)
+      throws EvalException {
     CcToolchainProvider toolchain = actionBuilder.getToolchain();
     if (language == Language.CPP) {
       CppConfiguration cppConfig = configuration.getFragment(CppConfiguration.class);
@@ -114,6 +119,10 @@ public class BazelCppSemantics implements AspectLegalCppSemantics {
           .setShouldScanIncludes(false);
     }
   }
+
+  @Override
+  public void finalizeLinkActionBuilder(
+      CppConfiguration configuration, CppLinkActionBuilder actionBuilder) throws EvalException {}
 
   @Override
   public boolean allowIncludeScanning() {

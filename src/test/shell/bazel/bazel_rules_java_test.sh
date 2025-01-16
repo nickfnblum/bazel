@@ -50,11 +50,6 @@ msys*|mingw*|cygwin*)
   ;;
 esac
 
-if "$is_windows"; then
-  export MSYS_NO_PATHCONV=1
-  export MSYS2_ARG_CONV_EXCL="*"
-fi
-
 function test_rules_java_can_be_overridden() {
   # The bazelrc file might contain an --override_repository flag for rules_java,
   # which would cause this test to fail to override the repo via a WORKSPACE file.
@@ -77,33 +72,40 @@ EOF
 filegroup(name = 'yolo')
 EOF
   touch override/java/BUILD || fail "couldn't touch override/java/BUILD"
-  cat > override/java/repositories.bzl <<EOF
+  cat > override/java/rules_java_deps.bzl <<EOF
 def rules_java_dependencies():
     pass
+EOF
+  cat > override/java/repositories.bzl <<EOF
 def rules_java_toolchains():
     pass
 EOF
 
   cd rules_java_can_be_overridden || fail "couldn't cd into workspace"
-  bazel build --noenable_bzlmod @rules_java//:yolo &> $TEST_log || \
+  bazel build --incompatible_autoload_externally= --noenable_bzlmod --enable_workspace @rules_java//:yolo &> $TEST_log || \
     fail "Bazel failed to build @rules_java"
 }
 
 function test_rules_java_repository_builds_itself() {
+  add_rules_java "MODULE.bazel"
   write_default_bazelrc
-  setup_skylib_support
 
   # We test that a built-in @rules_java repository is buildable.
   bazel build -- @rules_java//java/... &> $TEST_log \
       || fail "Build failed unexpectedly"
 }
 
+# Formerly --experimental_java_library_export
+function test_java_library_extension_support() {
+  add_rules_java "MODULE.bazel"
+  write_default_bazelrc
 
-function test_experimental_java_library_export_do_not_use() {
   mkdir -p java
   cat >java/java_library.bzl <<EOF
+load("@rules_java//java/common/rules/impl:bazel_java_library_impl.bzl", "bazel_java_library_rule")
+load("@rules_java//java/common/rules:java_library.bzl", "JAVA_LIBRARY_ATTRS")
 def _impl(ctx):
-    return experimental_java_library_export_do_not_use.bazel_java_library_rule(
+    return bazel_java_library_rule(
         ctx,
         ctx.files.srcs,
         ctx.attr.deps,
@@ -121,7 +123,7 @@ def _impl(ctx):
 
 java_library = rule(
   implementation = _impl,
-  attrs = experimental_java_library_export_do_not_use.JAVA_LIBRARY_ATTRS,
+  attrs = JAVA_LIBRARY_ATTRS,
   provides = [JavaInfo],
   outputs = {
       "classjar": "lib%{name}.jar",
@@ -146,8 +148,7 @@ public class HelloLibrary {
 }
 EOF
 
-  bazel build //java:hello_library &> $TEST_log && fail "build succeeded"
-  bazel build --experimental_java_library_export //java:hello_library &> $TEST_log || fail "build failed"
+  bazel build //java:hello_library &> $TEST_log || fail "build failed"
 }
 
 run_suite "rules_java tests"

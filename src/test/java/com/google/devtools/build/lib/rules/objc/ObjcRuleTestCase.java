@@ -16,8 +16,9 @@ package com.google.devtools.build.lib.rules.objc;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.common.truth.Truth8.assertThat;
 import static com.google.devtools.build.lib.actions.util.ActionsTestUtil.getFirstArtifactEndingWith;
+import static com.google.devtools.build.lib.skyframe.BzlLoadValue.keyForBuild;
+import static com.google.devtools.build.lib.skyframe.BzlLoadValue.keyForBuiltins;
 
 import com.google.common.base.Joiner;
 import com.google.common.base.Optional;
@@ -35,7 +36,14 @@ import com.google.devtools.build.lib.analysis.config.CompilationMode;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
 import com.google.devtools.build.lib.analysis.util.ScratchAttributeWriter;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
+import com.google.devtools.build.lib.collect.nestedset.Depset;
+import com.google.devtools.build.lib.collect.nestedset.NestedSet;
+import com.google.devtools.build.lib.packages.Provider;
+import com.google.devtools.build.lib.packages.StarlarkInfo;
+import com.google.devtools.build.lib.packages.StarlarkProvider;
+import com.google.devtools.build.lib.packages.StructImpl;
 import com.google.devtools.build.lib.packages.util.MockObjcSupport;
 import com.google.devtools.build.lib.rules.apple.AppleCommandLineOptions;
 import com.google.devtools.build.lib.rules.apple.DottedVersion;
@@ -46,7 +54,8 @@ import com.google.devtools.build.lib.testutil.TestConstants;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.io.IOException;
 import java.util.List;
-import java.util.Map;
+import net.starlark.java.eval.EvalException;
+import net.starlark.java.eval.Sequence;
 import org.junit.Before;
 
 /**
@@ -66,19 +75,14 @@ public abstract class ObjcRuleTestCase extends BuildViewTestCase {
 
   protected static final String OUTPUTDIR = TestConstants.PRODUCT_NAME + "-out//bin";
 
+  private static final Provider.Key APPLE_EXECUTABLE_BINARY_PROVIDER_KEY =
+      new StarlarkProvider.Key(
+          keyForBuild(Label.parseCanonicalUnchecked("//test_starlark:apple_binary_starlark.bzl")),
+          "AppleExecutableBinaryInfo");
+
   @Before
   public void setUp() throws Exception {
     setBuildLanguageOptions("--noincompatible_disable_objc_library_transition");
-  }
-
-  /** Specification of code coverage behavior. */
-  public enum CodeCoverageMode {
-    // No code coverage information.
-    NONE,
-    // Code coverage in gcov format.
-    GCOV,
-    // Code coverage in llvm-covmap format.
-    LLVMCOV;
   }
 
   protected String execPathEndingWith(Iterable<Artifact> artifacts, String suffix) {
@@ -170,24 +174,6 @@ public abstract class ObjcRuleTestCase extends BuildViewTestCase {
     assertThat(paramFileArgsForAction(originalAction)).containsExactlyElementsIn(execPaths.build());
   }
 
-  protected void assertAppleSdkVersionEnv(Map<String, String> env) throws Exception {
-    assertAppleSdkVersionEnv(env, DEFAULT_IOS_SDK_VERSION);
-  }
-
-  protected void assertAppleSdkVersionEnv(Map<String, String> env, DottedVersion versionNumber) {
-    assertThat(env).containsEntry("APPLE_SDK_VERSION_OVERRIDE", versionNumber.toString());
-  }
-
-  protected void assertAppleSdkVersionEnv(CommandAction action) throws Exception {
-    assertAppleSdkVersionEnv(action, DEFAULT_IOS_SDK_VERSION.toString());
-  }
-
-  protected void assertAppleSdkVersionEnv(CommandAction action, String versionString)
-      throws ActionExecutionException {
-    assertThat(action.getIncompleteEnvironmentForTesting())
-        .containsEntry("APPLE_SDK_VERSION_OVERRIDE", versionString);
-  }
-
   protected void assertAppleSdkPlatformEnv(CommandAction action, String platformName)
       throws ActionExecutionException {
     assertThat(action.getIncompleteEnvironmentForTesting())
@@ -205,10 +191,10 @@ public abstract class ObjcRuleTestCase extends BuildViewTestCase {
     if (ccInfo != null) {
       return ccInfo;
     }
-    AppleExecutableBinaryInfo executableProvider =
-        getConfiguredTarget(label).get(AppleExecutableBinaryInfo.STARLARK_CONSTRUCTOR);
+    StructImpl executableProvider =
+        (StructImpl) getConfiguredTarget(label).get(APPLE_EXECUTABLE_BINARY_PROVIDER_KEY);
     if (executableProvider != null) {
-      return executableProvider.getDepsCcInfo();
+      return executableProvider.getValue("cc_info", CcInfo.class);
     }
     return null;
   }
@@ -248,26 +234,31 @@ public abstract class ObjcRuleTestCase extends BuildViewTestCase {
   private ConfiguredTarget addLibWithDepOnFrameworkImport() throws Exception {
     scratch.file(
         "fx/defs.bzl",
-        "def _custom_static_framework_import_impl(ctx):",
-        "    return [",
-        "        apple_common.new_objc_provider(),",
-        "        CcInfo(",
-        "            compilation_context=cc_common.create_compilation_context(",
-        "                framework_includes=depset(ctx.attr.framework_search_paths)",
-        "            ),",
-        "        )",
-        "    ]",
-        "custom_static_framework_import = rule(",
-        "    _custom_static_framework_import_impl,",
-        "    attrs={'framework_search_paths': attr.string_list()},",
-        ")");
+        """
+        def _custom_static_framework_import_impl(ctx):
+            return [
+                CcInfo(
+                    compilation_context = cc_common.create_compilation_context(
+                        framework_includes = depset(ctx.attr.framework_search_paths),
+                    ),
+                ),
+            ]
+
+        custom_static_framework_import = rule(
+            _custom_static_framework_import_impl,
+            attrs = {"framework_search_paths": attr.string_list()},
+        )
+        """);
     scratch.file(
         "fx/BUILD",
-        "load(':defs.bzl', 'custom_static_framework_import')",
-        "custom_static_framework_import(",
-        "    name = 'fx',",
-        "    framework_search_paths = ['fx'],",
-        ")");
+        """
+        load(":defs.bzl", "custom_static_framework_import")
+
+        custom_static_framework_import(
+            name = "fx",
+            framework_search_paths = ["fx"],
+        )
+        """);
     return createLibraryTargetWriter("//lib:lib")
         .setAndCreateFiles("srcs", "a.m", "b.m", "private.h")
         .setList("deps", "//fx:fx")
@@ -288,9 +279,11 @@ public abstract class ObjcRuleTestCase extends BuildViewTestCase {
         "    'darwin_x86_64': '" + MockObjcSupport.DARWIN_X86_64 + "',",
         "    'ios_x86_64': '" + MockObjcSupport.IOS_X86_64 + "',",
         "    'ios_arm64': '" + MockObjcSupport.IOS_ARM64 + "',",
+        "    'ios_arm64e': '" + MockObjcSupport.IOS_ARM64E + "',",
         "    'ios_i386': '" + MockObjcSupport.IOS_I386 + "',", // legacy platform used in tests
         "    'ios_armv7': '" + MockObjcSupport.IOS_ARMV7 + "',", // legacy platform used in tests
         "    'watchos_armv7k': '" + MockObjcSupport.WATCHOS_ARMV7K + "',",
+        "    'watchos_arm64_32': '" + MockObjcSupport.WATCHOS_ARM64_32 + "',",
         "}",
         "_apple_platform_transition_inputs = [",
         "    '//command_line_option:apple_crosstool_top',",
@@ -307,11 +300,19 @@ public abstract class ObjcRuleTestCase extends BuildViewTestCase {
         "    '//command_line_option:apple_split_cpu',",
         "    '//command_line_option:compiler',",
         "    '//command_line_option:cpu',",
-        "    '//command_line_option:crosstool_top',",
         "    '//command_line_option:fission',",
         "    '//command_line_option:grte_top',",
         "    '//command_line_option:platforms',",
         "]",
+        "AppleDynamicFrameworkInfo = provider(",
+        "    fields = ['framework_dirs', 'framework_files', 'binary', 'cc_info'],)",
+        "",
+        "AppleExecutableBinaryInfo = provider(",
+        "    fields = ['binary', 'cc_info'],)",
+        "",
+        "AppleDebugOutputsInfo = provider(",
+        "    fields = ['outputs_map'],)",
+        "",
         "def _command_line_options(*, environment_arch = None, platform_type, settings):",
         "    cpu = ('darwin_' + environment_arch if platform_type == 'macos'",
         "            else platform_type + '_' +  environment_arch)",
@@ -323,8 +324,6 @@ public abstract class ObjcRuleTestCase extends BuildViewTestCase {
         "        '//command_line_option:apple_split_cpu': environment_arch,",
         "        '//command_line_option:compiler': None,",
         "        '//command_line_option:cpu': cpu,",
-        "        '//command_line_option:crosstool_top': ",
-        "            settings['//command_line_option:apple_crosstool_top'],",
         "        '//command_line_option:fission': [],",
         "        '//command_line_option:grte_top': None,",
         "        '//command_line_option:platforms': [_CPU_TO_PLATFORM[cpu]],",
@@ -356,6 +355,223 @@ public abstract class ObjcRuleTestCase extends BuildViewTestCase {
         "    inputs = _apple_platform_transition_inputs,",
         "    outputs = _apple_rule_base_transition_outputs,",
         ")",
+        "TargetTripletInfo = provider(fields = ['architecture', 'platform', 'environment'],)",
+        "def _build_avoid_library_set(avoid_dep_linking_contexts):",
+        "    avoid_library_set = dict()",
+        "    for linking_context in avoid_dep_linking_contexts:",
+        "        for linker_input in linking_context.linker_inputs.to_list():",
+        "            for library_to_link in linker_input.libraries:",
+        "                library_artifact ="
+            + " apple_common.compilation_support.get_static_library_for_linking(library_to_link)",
+        "                if library_artifact:",
+        "                    avoid_library_set[library_artifact.short_path] = True",
+        "    return avoid_library_set",
+        "",
+        "def subtract_linking_contexts(owner, linking_contexts, avoid_dep_linking_contexts):",
+        "    libraries = []",
+        "    user_link_flags = []",
+        "    additional_inputs = []",
+        "    linkstamps = []",
+        "    avoid_library_set = _build_avoid_library_set(avoid_dep_linking_contexts)",
+        "    for linking_context in linking_contexts:",
+        "        for linker_input in linking_context.linker_inputs.to_list():",
+        "            for library_to_link in linker_input.libraries:",
+        "                library_artifact ="
+            + " apple_common.compilation_support.get_library_for_linking(library_to_link)",
+        "                if library_artifact.short_path not in avoid_library_set:",
+        "                    libraries.append(library_to_link)",
+        "            user_link_flags.extend(linker_input.user_link_flags)",
+        "            additional_inputs.extend(linker_input.additional_inputs)",
+        "            linkstamps.extend(linker_input.linkstamps)",
+        "    linker_input = cc_common.create_linker_input(",
+        "        owner = owner,",
+        "        libraries = depset(libraries, order = 'topological'),",
+        "        user_link_flags = user_link_flags,",
+        "        additional_inputs = depset(additional_inputs),",
+        "        linkstamps = depset(linkstamps),",
+        "    )",
+        "    return cc_common.create_linking_context(",
+        "        linker_inputs = depset([linker_input]),",
+        "        owner = owner,",
+        "    )",
+        "",
+        "def _get_target_triplet(config):",
+        "    cpu_platform ="
+            + " apple_common.apple_platform.for_target_cpu(apple_common.get_cpu(config))",
+        "    apple_config = apple_common.get_apple_config(config)",
+        "",
+        "    return TargetTripletInfo(",
+        "        architecture = apple_config.single_arch_cpu,",
+        "        platform = apple_common.apple_platform.get_target_platform(cpu_platform),",
+        "        environment = apple_common.apple_platform.get_target_environment(cpu_platform),",
+        "    )",
+        "",
+        "def get_split_target_triplet(ctx):",
+        "    result = dict()",
+        "    ctads = apple_common.get_split_prerequisites(ctx)",
+        "    for split_transition_key, config in ctads.items():",
+        "        if split_transition_key == None:",
+        "            fail('unexpected empty key in split transition')",
+        "        result[split_transition_key] = _get_target_triplet(config)",
+        "    return result",
+        "",
+        "def _link_multi_arch_binary(",
+        "        *,",
+        "        ctx,",
+        "        avoid_deps = [],",
+        "        extra_linkopts = [],",
+        "        extra_link_inputs = [],",
+        "        extra_requested_features = [],",
+        "        extra_disabled_features = [],",
+        "        stamp = -1,",
+        "        variables_extension = {}):",
+        "",
+        "    split_target_triplets = get_split_target_triplet(ctx)",
+        "    split_build_configs = apple_common.get_split_build_configs(ctx)",
+        "    split_deps = ctx.split_attr.deps",
+        "    child_configs_and_toolchains = ctx.split_attr._child_configuration_dummy",
+        "",
+        "    if split_deps and split_deps.keys() != child_configs_and_toolchains.keys():",
+        "        fail(('Split transition keys are different between deps [%s] and ' +",
+        "              '_child_configuration_dummy [%s]') % (",
+        "            split_deps.keys(),",
+        "            child_configs_and_toolchains.keys(),",
+        "        ))",
+        "",
+        "    avoid_cc_infos = [",
+        "        dep[AppleDynamicFrameworkInfo].cc_info",
+        "        for dep in avoid_deps",
+        "        if AppleDynamicFrameworkInfo in dep",
+        "    ]",
+        "    avoid_cc_infos.extend([",
+        "        dep[AppleExecutableBinaryInfo].cc_info",
+        "        for dep in avoid_deps",
+        "        if AppleExecutableBinaryInfo in dep",
+        "    ])",
+        "    avoid_cc_infos.extend([dep[CcInfo] for dep in avoid_deps if CcInfo in dep])",
+        "    avoid_cc_linking_contexts = [dep.linking_context for dep in avoid_cc_infos]",
+        "",
+        "    outputs = []",
+        "    cc_infos = []",
+        "    legacy_debug_outputs = {}",
+        "",
+        "    cc_infos.extend(avoid_cc_infos)",
+        "",
+        "    additional_linker_inputs = getattr(ctx.attr, 'additional_linker_inputs', [])",
+        "    attr_linkopts = [",
+        "        ctx.expand_location(opt, targets = additional_linker_inputs)",
+        "        for opt in getattr(ctx.attr, 'linkopts', [])",
+        "    ]",
+        "    attr_linkopts = [token for opt in attr_linkopts for token in ctx.tokenize(opt)]",
+        "",
+        "    for split_transition_key, child_toolchain in child_configs_and_toolchains.items():",
+        "        cc_toolchain = child_toolchain[cc_common.CcToolchainInfo]",
+        "        deps = split_deps.get(split_transition_key, [])",
+        "        target_triplet = split_target_triplets.get(split_transition_key)",
+        "",
+        "        common_variables = apple_common.compilation_support.build_common_variables(",
+        "            ctx = ctx,",
+        "            toolchain = cc_toolchain,",
+        "            deps = deps,",
+        "            extra_disabled_features = extra_disabled_features,",
+        "            extra_enabled_features = extra_requested_features,",
+        "            attr_linkopts = attr_linkopts,",
+        "        )",
+        "",
+        "        cc_infos.append(CcInfo(",
+        "            compilation_context = cc_common.merge_compilation_contexts(",
+        "                compilation_contexts =",
+        "                    common_variables.objc_compilation_context.cc_compilation_contexts,",
+        "            ),",
+        "            linking_context = cc_common.merge_linking_contexts(",
+        "                linking_contexts ="
+            + " common_variables.objc_linking_context.cc_linking_contexts,",
+        "            ),",
+        "        ))",
+        "",
+        "        cc_linking_context = subtract_linking_contexts(",
+        "            owner = ctx.label,",
+        "            linking_contexts = common_variables.objc_linking_context.cc_linking_contexts"
+            + " +",
+        "                               avoid_cc_linking_contexts,",
+        "            avoid_dep_linking_contexts = avoid_cc_linking_contexts,",
+        "        )",
+        "",
+        "        child_config = split_build_configs.get(split_transition_key)",
+        "",
+        "        additional_outputs = []",
+        "        extensions = {}",
+        "",
+        "        dsym_binary = None",
+        "        if ctx.fragments.cpp.apple_generate_dsym:",
+        "            if ctx.fragments.cpp.objc_should_strip_binary:",
+        "                suffix = '_bin_unstripped.dwarf'",
+        "            else:",
+        "                suffix = '_bin.dwarf'",
+        "            dsym_binary = ctx.actions.declare_shareable_artifact(",
+        "                ctx.label.package + '/' + ctx.label.name + suffix,",
+        "                child_config.bin_dir,",
+        "            )",
+        "            extensions['dsym_path'] = dsym_binary.path  # dsym symbol file",
+        "            additional_outputs.append(dsym_binary)",
+        "            legacy_debug_outputs.setdefault(target_triplet.architecture,"
+            + " {})['dsym_binary'] = dsym_binary",
+        "",
+        "        linkmap = None",
+        "        if ctx.fragments.cpp.objc_generate_linkmap:",
+        "            linkmap = ctx.actions.declare_shareable_artifact(",
+        "                ctx.label.package + '/' + ctx.label.name + '.linkmap',",
+        "                child_config.bin_dir,",
+        "            )",
+        "            extensions['linkmap_exec_path'] = linkmap.path  # linkmap file",
+        "            additional_outputs.append(linkmap)",
+        "            legacy_debug_outputs.setdefault(target_triplet.architecture, {})['linkmap'] ="
+            + " linkmap",
+        "",
+        "        name = ctx.label.name + '_bin'",
+        "        executable ="
+            + " apple_common.compilation_support.register_configuration_specific_link_actions(",
+        "            name = name,",
+        "            common_variables = common_variables,",
+        "            cc_linking_context = cc_linking_context,",
+        "            build_config = child_config,",
+        "            extra_link_args = extra_linkopts,",
+        "            stamp = stamp,",
+        "            user_variable_extensions = variables_extension | extensions,",
+        "            additional_outputs = additional_outputs,",
+        "            deps = deps,",
+        "            extra_link_inputs = extra_link_inputs,",
+        "            attr_linkopts = attr_linkopts,",
+        "        )",
+        "",
+        "        output = {",
+        "            'binary': executable,",
+        "            'platform': target_triplet.platform,",
+        "            'architecture': target_triplet.architecture,",
+        "            'environment': target_triplet.environment,",
+        "            'dsym_binary': dsym_binary,",
+        "            'linkmap': linkmap,",
+        "        }",
+        "",
+        "        outputs.append(struct(**output))",
+        "",
+        "    header_tokens = []",
+        "    for _, deps in split_deps.items():",
+        "        for dep in deps:",
+        "            if CcInfo in dep:",
+        "               "
+            + " header_tokens.append(dep[CcInfo].compilation_context.validation_artifacts)",
+        "",
+        "    output_groups = {'_validation': depset(transitive = header_tokens)}",
+        "",
+        "    return struct(",
+        "        cc_info = cc_common.merge_cc_infos(direct_cc_infos = cc_infos),",
+        "        output_groups = output_groups,",
+        "        outputs = outputs,",
+        "        debug_outputs_provider = AppleDebugOutputsInfo(outputs_map ="
+            + " legacy_debug_outputs),",
+        "    )",
+        "",
         "def apple_binary_starlark_impl(ctx):",
         "    all_avoid_deps = list(ctx.attr.avoid_deps)",
         "    binary_type = ctx.attr.binary_type",
@@ -372,11 +588,11 @@ public abstract class ObjcRuleTestCase extends BuildViewTestCase {
             + " '@loader_path/Frameworks'])",
         "    if ctx.attr.bundle_loader:",
         "        bundle_loader = ctx.attr.bundle_loader",
-        "        bundle_loader_file = bundle_loader[apple_common.AppleExecutableBinary].binary",
+        "        bundle_loader_file = bundle_loader[AppleExecutableBinaryInfo].binary",
         "        all_avoid_deps.append(bundle_loader)",
         "        linkopts.extend(['-bundle_loader', bundle_loader_file.path])",
         "        link_inputs.append(bundle_loader_file)",
-        "    link_result = apple_common.link_multi_arch_binary(",
+        "    link_result = _link_multi_arch_binary(",
         "        ctx = ctx,",
         "        avoid_deps = all_avoid_deps,",
         "        extra_linkopts = linkopts,",
@@ -418,7 +634,7 @@ public abstract class ObjcRuleTestCase extends BuildViewTestCase {
         "        link_result.debug_outputs_provider,",
         "    ]",
         "    if binary_type == 'executable':",
-        "        providers.append(apple_common.new_executable_binary_provider(",
+        "        providers.append(AppleExecutableBinaryInfo(",
         "            binary = processed_binary,",
         "            cc_info = link_result.cc_info,",
         "        ))",
@@ -463,16 +679,18 @@ public abstract class ObjcRuleTestCase extends BuildViewTestCase {
         "    exec_groups = {",
         "        'j2objc': exec_group()",
         "    },",
-        "    fragments = ['apple', 'objc', 'cpp',],",
+        "    fragments = ['apple', 'objc', 'cpp', 'j2objc'],",
         ")");
     scratch.overwriteFile(
         "tools/allowlists/function_transition_allowlist/BUILD",
-        "package_group(",
-        "    name = 'function_transition_allowlist',",
-        "    packages = [",
-        "        '//...',",
-        "    ],",
-        ")");
+        """
+        package_group(
+            name = "function_transition_allowlist",
+            packages = [
+                "//...",
+            ],
+        )
+        """);
   }
 
   protected CommandAction compileAction(String ownerLabel, String objFileName) throws Exception {
@@ -573,34 +791,17 @@ public abstract class ObjcRuleTestCase extends BuildViewTestCase {
     return rootedPaths.build();
   }
 
-  protected void checkClangCoptsForCompilationMode(
-      RuleType ruleType, CompilationMode mode, CodeCoverageMode codeCoverageMode) throws Exception {
+  protected void checkClangCoptsForCompilationMode(RuleType ruleType, CompilationMode mode)
+      throws Exception {
     ImmutableList.Builder<String> allExpectedCoptsBuilder =
         ImmutableList.<String>builder()
             .addAll(CompilationSupport.DEFAULT_COMPILER_FLAGS)
             .addAll(compilationModeCopts(mode));
+    useConfiguration(
+        "--platforms=" + MockObjcSupport.IOS_X86_64,
+        "--apple_platform_type=ios",
+        "--compilation_mode=" + compilationModeFlag(mode));
 
-    switch (codeCoverageMode) {
-      case NONE:
-        useConfiguration(
-            "--apple_platform_type=ios", "--compilation_mode=" + compilationModeFlag(mode));
-        break;
-      case GCOV:
-        allExpectedCoptsBuilder.addAll(CompilationSupport.CLANG_GCOV_COVERAGE_FLAGS);
-        useConfiguration(
-            "--apple_platform_type=ios",
-            "--collect_code_coverage",
-            "--compilation_mode=" + compilationModeFlag(mode));
-        break;
-      case LLVMCOV:
-        allExpectedCoptsBuilder.addAll(CompilationSupport.CLANG_LLVM_COVERAGE_FLAGS);
-        useConfiguration(
-            "--apple_platform_type=ios",
-            "--collect_code_coverage",
-            "--experimental_use_llvm_covmap",
-            "--compilation_mode=" + compilationModeFlag(mode));
-        break;
-    }
     scratch.file("x/a.m");
     ruleType.scratchTarget(scratch, "srcs", "['a.m']");
 
@@ -617,7 +818,11 @@ public abstract class ObjcRuleTestCase extends BuildViewTestCase {
             .addAll(ObjcConfiguration.DBG_COPTS);
 
     useConfiguration(
-        "--apple_platform_type=ios", "--compilation_mode=dbg", "--objc_debug_with_GLIBCXX=false");
+        "--platforms=" + MockObjcSupport.IOS_X86_64,
+        "--apple_platform_type=ios",
+        "--compilation_mode=dbg",
+        "--objc_debug_with_GLIBCXX=false",
+        "--experimental_platform_in_output_dir");
     scratch.file("x/a.m");
     ruleType.scratchTarget(scratch, "srcs", "['a.m']");
 
@@ -684,7 +889,7 @@ public abstract class ObjcRuleTestCase extends BuildViewTestCase {
 
   protected void checkSdkIncludesUsedInCompileAction(RuleType ruleType) throws Exception {
     ruleType.scratchTarget(scratch, "sdk_includes", "['foo', 'bar/baz']", "srcs", "['a.m', 'b.m']");
-    String sdkIncludeDir = AppleToolchain.sdkDir() + "/usr/include";
+    String sdkIncludeDir = "__BAZEL_XCODE_SDKROOT__/usr/include";
     // we remove spaces, since the legacy rules put a space after "-I" in include paths.
     String compileActionACommandLine =
         Joiner.on(" ").join(compileAction("//x:x", "a.o").getArguments()).replace(" ", "");
@@ -712,7 +917,7 @@ public abstract class ObjcRuleTestCase extends BuildViewTestCase {
         .setList("deps", "//lib:lib")
         .setList("sdk_includes", "from_bin")
         .write();
-    String sdkIncludeDir = AppleToolchain.sdkDir() + "/usr/include";
+    String sdkIncludeDir = "__BAZEL_XCODE_SDKROOT__/usr/include";
 
     // We remove spaces because the crosstool case does not use spaces for include paths.
     String compileAArgs =
@@ -761,5 +966,40 @@ public abstract class ObjcRuleTestCase extends BuildViewTestCase {
   protected static Iterable<String> getArifactPathsOfHeaders(ConfiguredTarget target) {
     return Artifact.toRootRelativePaths(
         target.get(CcInfo.PROVIDER).getCcCompilationContext().getDeclaredIncludeSrcs());
+  }
+
+  protected static StarlarkInfo getObjcInfo(ConfiguredTarget starlarkTarget)
+      throws LabelSyntaxException {
+    return (StarlarkInfo)
+        starlarkTarget.get(
+            new StarlarkProvider.Key(
+                keyForBuiltins(Label.parseCanonical("@_builtins//:common/objc/objc_info.bzl")),
+                "ObjcInfo"));
+  }
+
+  protected static ImmutableList<Artifact> getDirectSources(StarlarkInfo provider)
+      throws EvalException {
+    return Sequence.cast(provider.getValue("direct_sources"), Artifact.class, "direct_sources")
+        .getImmutableList();
+  }
+
+  protected static NestedSet<Artifact> getModuleMap(StarlarkInfo provider) throws EvalException {
+    return Depset.cast(provider.getValue("module_map"), Artifact.class, "module_map");
+  }
+
+  protected static ImmutableList<Artifact> getSource(StarlarkInfo provider) throws EvalException {
+    return Depset.cast(provider.getValue("source"), Artifact.class, "source").toList();
+  }
+
+  protected static ImmutableList<String> getStrictInclude(StarlarkInfo provider)
+      throws EvalException {
+    return Depset.cast(provider.getValue("strict_include"), String.class, "strict_include")
+        .toList();
+  }
+
+  protected static ImmutableList<Artifact> getUmbrellaHeader(StarlarkInfo provider)
+      throws EvalException {
+    return Depset.cast(provider.getValue("umbrella_header"), Artifact.class, "umbrella_header")
+        .toList();
   }
 }

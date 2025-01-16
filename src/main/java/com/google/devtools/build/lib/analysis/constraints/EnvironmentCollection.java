@@ -14,7 +14,8 @@
 
 package com.google.devtools.build.lib.analysis.constraints;
 
-import com.google.auto.value.AutoValue;
+import static java.util.Objects.requireNonNull;
+
 import com.google.common.base.MoreObjects;
 import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
@@ -48,15 +49,15 @@ public final class EnvironmentCollection {
   }
 
   /** Stores an environment's build label along with the group it belongs to. */
-  @AutoValue
-  abstract static class EnvironmentWithGroup {
-    static EnvironmentWithGroup create(Label environment, EnvironmentLabels group) {
-      return new AutoValue_EnvironmentCollection_EnvironmentWithGroup(environment, group);
+  record EnvironmentWithGroup(Label environment, EnvironmentLabels group) {
+    EnvironmentWithGroup {
+      requireNonNull(environment, "environment");
+      requireNonNull(group, "group");
     }
 
-    abstract Label environment();
-
-    abstract EnvironmentLabels group();
+    static EnvironmentWithGroup create(Label environment, EnvironmentLabels group) {
+      return new EnvironmentWithGroup(environment, group);
+    }
   }
 
   /**
@@ -108,12 +109,11 @@ public final class EnvironmentCollection {
     if (this == o) {
       return true;
     }
-    if (!(o instanceof EnvironmentCollection)) {
+    if (!(o instanceof EnvironmentCollection that)) {
       return false;
     }
     // ImmutableListMultimap equality considers the order of each value list but not the order of
     // keys. Additionally check equality of the keys as a list to reflect ordering.
-    EnvironmentCollection that = (EnvironmentCollection) o;
     return map.equals(that.map) && map.keySet().asList().equals(that.map.keySet().asList());
   }
 

@@ -125,8 +125,6 @@ function rlocation() {
   fi
 }
 
-export -f rlocation
-export -f is_absolute
 # If RUNFILES_MANIFEST_ONLY is set to 1 and the manifest file does exist,
 # then test programs should use manifest file to find runfiles.
 if [[ "${RUNFILES_MANIFEST_ONLY:-}" == "1" && -e "${RUNFILES_MANIFEST_FILE:-}" ]]; then
@@ -235,6 +233,17 @@ if is_absolute "$EXE"; then
 else
   TEST_PATH="$(rlocation $TEST_WORKSPACE/$EXE)"
 fi
+
+# Redefine rlocation to notify users of its removal - it used to be exported.
+# TODO: Remove this before Bazel 9.
+function rlocation() {
+  caller 0 | {
+    read LINE SUB FILE
+    echo >&2 "ERROR: rlocation is no longer implicitly provided by Bazel's test setup, but called from $SUB in line $LINE of $FILE. Please use https://github.com/bazelbuild/rules_shell/blob/main/shell/runfiles/runfiles.bash instead."
+    exit 1
+  }
+}
+export -f rlocation
 
 # TODO(jsharpe): Use --test_env=TEST_SHORT_EXEC_PATH=true to activate this code
 # path to workaround a bug with long executable paths when executing remote
@@ -426,7 +435,8 @@ if [[ -n "$TEST_UNDECLARED_OUTPUTS_ZIP" ]] && cd "$TEST_UNDECLARED_OUTPUTS_DIR";
   UNDECLARED_OUTPUTS=(*)
   if [[ "${#UNDECLARED_OUTPUTS[@]}" != 0 ]]; then
     if ! zip_output="$(zip -qr "$TEST_UNDECLARED_OUTPUTS_ZIP" -- "${UNDECLARED_OUTPUTS[@]}")" ; then
-        echo >&2 "Could not create \"$TEST_UNDECLARED_OUTPUTS_ZIP\": $zip_output"
+      echo >&2 "Could not create \"$TEST_UNDECLARED_OUTPUTS_ZIP\": $zip_output"
+      exit 1
     fi
     # Use 'rm' instead of 'zip -m' so that we don't follow symlinks when deleting the
     # contents.

@@ -14,7 +14,8 @@
 package com.google.devtools.build.lib.query2.aquery;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static com.google.devtools.build.lib.util.StringUtil.decodeBytestringUtf8;
+import static com.google.devtools.build.lib.query2.aquery.AqueryUtils.getActionInputs;
+import static com.google.devtools.build.lib.util.StringEncoding.internalToUnicode;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.google.common.collect.ImmutableList;
@@ -37,6 +38,7 @@ import com.google.devtools.build.lib.analysis.actions.TemplateExpansionAction;
 import com.google.devtools.build.lib.analysis.starlark.UnresolvedSymlinkAction;
 import com.google.devtools.build.lib.buildeventstream.BuildEvent;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos;
+import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.packages.AspectDescriptor;
 import com.google.devtools.build.lib.packages.LabelPrinter;
@@ -113,8 +115,8 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
 
   private void writeAction(ActionAnalysisMetadata action, PrintStream printStream)
       throws IOException, CommandLineExpansionException, InterruptedException, EvalException {
-    if (options.includeParamFiles && action instanceof ParameterFileWriteAction) {
-      ParameterFileWriteAction parameterFileWriteAction = (ParameterFileWriteAction) action;
+    if (options.includeParamFiles
+        && action instanceof ParameterFileWriteAction parameterFileWriteAction) {
 
       String fileContent = String.join(" \\\n    ", parameterFileWriteAction.getArguments());
       String paramFileName = action.getPrimaryOutput().getExecPathString();
@@ -122,7 +124,7 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
       getParamFileNameToContentMap().put(paramFileName, fileContent);
     }
 
-    if (!AqueryUtils.matchesAqueryFilters(action, actionFilters)) {
+    if (!AqueryUtils.matchesAqueryFilters(action, actionFilters, options.includePrunedInputs)) {
       return;
     }
 
@@ -191,8 +193,7 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
       }
     }
 
-    if (action instanceof ActionExecutionMetadata) {
-      ActionExecutionMetadata actionExecutionMetadata = (ActionExecutionMetadata) action;
+    if (action instanceof ActionExecutionMetadata actionExecutionMetadata) {
       stringBuilder
           .append("  ActionKey: ")
           .append(actionExecutionMetadata.getKey(actionKeyContext, /*artifactExpander=*/ null))
@@ -200,32 +201,24 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
     }
 
     if (options.includeArtifacts) {
+      NestedSet<Artifact> inputs = getActionInputs(action, options.includePrunedInputs);
+
       stringBuilder
           .append("  Inputs: [")
           .append(
-              action.getInputs().toList().stream()
-                  .map(input -> escapeBytestringUtf8(input.getExecPathString()))
+              inputs.toList().stream()
+                  .map(input -> internalToEscapedUnicode(input.getExecPathString()))
                   .sorted()
-                  .collect(Collectors.joining(", ")));
-
-      if (options.includeSchedulingDependencies && !action.getSchedulingDependencies().isEmpty()) {
-        stringBuilder
-            .append("  SchedulingDependencies: [")
-            .append(
-                action.getSchedulingDependencies().toList().stream()
-                    .map(input -> escapeBytestringUtf8(input.getExecPathString()))
-                    .sorted()
-                    .collect(Collectors.joining(", ")));
-      }
+                  .collect(Collectors.joining(", ")))
+          .append("]\n");
 
       stringBuilder
-          .append("]\n")
           .append("  Outputs: [")
           .append(
               action.getOutputs().stream()
                   .map(
                       output ->
-                          escapeBytestringUtf8(
+                          internalToEscapedUnicode(
                               output.isTreeArtifact()
                                   ? output.getExecPathString() + " (TreeArtifact)"
                                   : output.getExecPathString()))
@@ -234,8 +227,7 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
           .append("]\n");
     }
 
-    if (action instanceof AbstractAction) {
-      AbstractAction abstractAction = (AbstractAction) action;
+    if (action instanceof AbstractAction abstractAction) {
       // TODO(twerth): This handles the fixed environment. We probably want to output the inherited
       // environment as well.
       Iterable<Map.Entry<String, String>> fixedEnvironment =
@@ -247,7 +239,7 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
                 Streams.stream(fixedEnvironment)
                     .map(
                         environmentVariable ->
-                            escapeBytestringUtf8(
+                            internalToEscapedUnicode(
                                 environmentVariable.getKey()
                                     + "="
                                     + environmentVariable.getValue()))
@@ -265,7 +257,7 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
                   /* prettyPrintArgs= */ true,
                   ((CommandAction) action)
                       .getArguments().stream()
-                          .map(a -> escapeBytestringUtf8(a))
+                          .map(a -> internalToEscapedUnicode(a))
                           .collect(toImmutableList()),
                   /* environment= */ null,
                   /* environmentVariablesToClear= */ null,
@@ -280,7 +272,7 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
     if (options.includeParamFiles) {
       // Assumption: if an Action takes a param file as an input, it will be used
       // to provide params to the command.
-      for (Artifact input : action.getInputs().toList()) {
+      for (Artifact input : getActionInputs(action, options.includePrunedInputs).toList()) {
         String inputFileName = input.getExecPathString();
         if (getParamFileNameToContentMap().containsKey(inputFileName)) {
           stringBuilder
@@ -309,8 +301,7 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
           .append("}\n");
     }
 
-    if (action instanceof TemplateExpansionAction) {
-      TemplateExpansionAction templateExpansionAction = (TemplateExpansionAction) action;
+    if (action instanceof TemplateExpansionAction templateExpansionAction) {
       stringBuilder
           .append("  Template: ")
           .append(AqueryUtils.getTemplateContent(templateExpansionAction))
@@ -328,9 +319,7 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
       stringBuilder.append("  ]\n");
     }
 
-    if (action instanceof AbstractFileWriteAction.FileContentsProvider) {
-      AbstractFileWriteAction.FileContentsProvider fileAction =
-          (AbstractFileWriteAction.FileContentsProvider) action;
+    if (action instanceof AbstractFileWriteAction.FileContentsProvider fileAction) {
       stringBuilder.append(String.format("  IsExecutable: %b\n", fileAction.makeExecutable()));
       if (options.includeFileWriteContents) {
         String contents = fileAction.getFileContents(eventHandler);
@@ -362,24 +351,20 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
   }
 
   /**
-   * Decode a bytestring that might contain UTF-8, and escape any characters outside the basic
-   * printable ASCII range.
-   *
-   * <p>This function is intended for human consumption in debug output that needs to be durable
-   * against unusual encoding settings, and does not guarantee that the escaping process is
-   * reverseable.
+   * Convert an internal string (see {@link com.google.devtools.build.lib.util.StringEncoding}) to a
+   * Unicode string with any character outside the basic printable ASCII range escaped.
    *
    * <p>Characters other than printable ASCII but within the Basic Multilingual Plane are formatted
    * with `\\uXXXX`. Characters outside the BMP are formatted as `\\UXXXXXXXX`.
    */
-  public static String escapeBytestringUtf8(String maybeUtf8) {
-    if (maybeUtf8.chars().allMatch(c -> c >= 0x20 && c < 0x7F)) {
-      return maybeUtf8;
+  public static String internalToEscapedUnicode(String internal) {
+    if (internal.chars().allMatch(c -> c >= 0x20 && c < 0x7F)) {
+      return internal;
     }
 
-    final String decoded = decodeBytestringUtf8(maybeUtf8);
-    final StringBuilder sb = new StringBuilder(decoded.length() * 8);
-    decoded
+    final String unicode = internalToUnicode(internal);
+    final StringBuilder sb = new StringBuilder(unicode.length() * 8);
+    unicode
         .codePoints()
         .forEach(
             c -> {

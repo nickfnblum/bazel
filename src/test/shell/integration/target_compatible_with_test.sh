@@ -58,12 +58,8 @@ msys*)
   ;;
 esac
 
-if "$is_windows"; then
-  export MSYS_NO_PATHCONV=1
-  export MSYS2_ARG_CONV_EXCL="*"
-fi
-
 function set_up() {
+  add_platforms "MODULE.bazel"
   mkdir -p target_skipping || fail "couldn't create directory"
   cat > target_skipping/pass.sh <<'EOF'
 #!/bin/bash
@@ -465,40 +461,6 @@ function test_failure_on_incompatible_top_level_target() {
   expect_log '^//target_skipping:pass_on_foo1  *  PASSED in'
   expect_log '^ERROR: command succeeded, but not all targets were analyzed'
   expect_log '^ERROR: Build did NOT complete successfully'
-}
-
-# https://github.com/bazelbuild/bazel/issues/17561 regression test: incompatible
-# target skipping doesn't crash with --auto_cpu_environment_group.
-function test_failure_on_incompatible_top_level_target_and_auto_cpu_environment_group() {
-  cat >> target_skipping/BUILD <<EOF
-sh_test(
-    name = "always_incompatible",
-    srcs = [":pass.sh"],
-    target_compatible_with = ["@platforms//:incompatible"],
-)
-EOF
-
-  mkdir -p buildenv/cpus
-  cat > buildenv/cpus/BUILD <<EOF
-package(default_visibility = ["//visibility:public"])
-
-environment(name = "foo_cpu")
-environment_group(
-    name = "cpus",
-    defaults = [":foo_cpu"],
-    environments = [":foo_cpu"],
-)
-EOF
-
-  bazel build \
-    --nobuild \
-    --cpu=foo_cpu \
-    --auto_cpu_environment_group=//buildenv/cpus:cpus \
-    --build_event_text_file=$TEST_log \
-    //target_skipping:all &> "${TEST_log}" \
-        || fail "Bazel failed unexpectedly."
-
-  expect_log 'Target //target_skipping:always_incompatible build was skipped'
 }
 
 # Validates that incompatible target skipping works with top level targets when
@@ -924,7 +886,7 @@ EOF
 # Validates that we can express targets being compatible with everything _but_
 # A and B.
 function test_inverse_logic() {
-  setup_skylib_support
+  add_bazel_skylib "MODULE.bazel"
 
   # Not using 'EOF' because injecting skylib_package
   cat >> target_skipping/BUILD <<EOF
@@ -1110,11 +1072,12 @@ EOF
 # for https://github.com/bazelbuild/bazel/issues/12897.
 function test_incompatible_with_missing_toolchain() {
   set_up_custom_toolchain
-  cat >> WORKSPACE <<'EOF'
+  cat >> MODULE.bazel <<'EOF'
+local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "local_repository")
 local_repository(name = 'build_bazel_apple_support', path = 'build_bazel_apple_support')
 EOF
   mkdir -p build_bazel_apple_support/platforms
-  touch build_bazel_apple_support/WORKSPACE
+  touch build_bazel_apple_support/REPO.bazel
   cat > build_bazel_apple_support/platforms/BUILD <<'EOF'
 package(default_visibility=["//visibility:public"])
 platform(
@@ -1271,7 +1234,7 @@ EOF
 # Validates that we successfully skip analysistest rule targets when they
 # depend on incompatible targets.
 function test_analysistest() {
-  setup_skylib_support
+  add_bazel_skylib "MODULE.bazel"
 
   # Not using 'EOF' because injecting skylib_package
   cat > target_skipping/analysistest.bzl <<EOF
@@ -1678,6 +1641,242 @@ EOF
   bazel build --show_result=10 //missing_toolchain:all &> "${TEST_log}" \
     || fail "Bazel failed unexpectedly."
   expect_log "Target //missing_toolchain:my_rule was skipped"
+}
+
+# Regression test for https://github.com/bazelbuild/bazel/issues/23003.
+function test_config_setting_on_label_flag_works_when_actual_is_incompatible() {
+  # Not using 'EOF' because injecting default_host_platform
+  cat > target_skipping/BUILD <<EOF
+constraint_setting(name = "foo_version")
+constraint_value(
+    name = "foo1",
+    constraint_setting = ":foo_version",
+)
+constraint_value(
+    name = "foo2",
+    constraint_setting = ":foo_version",
+)
+# The label_flag defaults to a target that's incompatible with this build.
+label_flag(
+    name = "my_label_flag",
+    build_setting_default = ":foo1_target",
+)
+sh_library(
+    name = "foo1_target",
+    srcs = ["incompatible.sh"],
+    target_compatible_with = [":foo1"],
+)
+config_setting(
+    name = "mylabel_flag_points_to_foo1",
+    flag_values = {
+        ":my_label_flag": ":foo1_target",
+    },
+)
+genrule(
+    name = "mytarget",
+    srcs = [],
+    outs = ["mytarget.txt"],
+    cmd = "echo " + select({
+        ":mylabel_flag_points_to_foo1": "label flag matches",
+    }) + " > \$(OUTS)",
+)
+platform(
+    name = "platform_foo2",
+    parents = ["${default_host_platform}"],
+    constraint_values = [
+        ":foo2",
+    ],
+)
+EOF
+
+  cd target_skipping || fail "couldn't cd into workspace"
+  bazel build \
+    --show_result=10 \
+    --host_platform=@//target_skipping:platform_foo2 \
+    --platforms=@//target_skipping:platform_foo2 \
+    //target_skipping:mytarget &> "${TEST_log}" || fail "Bazel failed unexpectedly."
+  expect_log " ${PRODUCT_NAME}-bin/target_skipping/mytarget.txt$"
+  expect_log 'Build completed successfully'
+}
+
+# Regression test for https://github.com/bazelbuild/bazel/issues/23003.
+function test_dep_on_label_flag_is_incompatible_when_reference_is_incompatible() {
+  # Not using 'EOF' because injecting default_host_platform
+  cat > target_skipping/BUILD <<EOF
+constraint_setting(name = "foo_version")
+constraint_value(
+    name = "foo1",
+    constraint_setting = ":foo_version",
+)
+constraint_value(
+    name = "foo2",
+    constraint_setting = ":foo_version",
+)
+label_flag(
+    name = "my_label_flag",
+    build_setting_default = ":foo1_target",
+)
+sh_library(
+    name = "foo1_target",
+    srcs = ["incompatible.sh"],
+    target_compatible_with = [":foo1"],
+)
+sh_binary(
+    name = "mytarget",
+    srcs = ["mytarget.sh"],
+    deps = [":my_label_flag"]
+)
+platform(
+    name = "platform_foo2",
+    parents = ["${default_host_platform}"],
+    constraint_values = [
+        ":foo2",
+    ],
+)
+EOF
+
+  cd target_skipping || fail "couldn't cd into workspace"
+  bazel build --nobuild \
+    --show_result=10 \
+    --host_platform=@//target_skipping:platform_foo2 \
+    --platforms=@//target_skipping:platform_foo2 \
+    //target_skipping:mytarget &> "${TEST_log}" && fail "Bazel succeeded unexpectedly."
+    expect_log 'Target //target_skipping:mytarget is incompatible and cannot be built'
+    expect_log '^ERROR: Build did NOT complete successfully'
+}
+
+# Regression test for https://github.com/bazelbuild/bazel/issues/23003.
+function test_building_label_flag_with_incompatible_ref_fails_as_incompatible() {
+  # Not using 'EOF' because injecting default_host_platform
+  cat > target_skipping/BUILD <<EOF
+constraint_setting(name = "foo_version")
+constraint_value(
+    name = "foo1",
+    constraint_setting = ":foo_version",
+)
+constraint_value(
+    name = "foo2",
+    constraint_setting = ":foo_version",
+)
+label_flag(
+    name = "my_label_flag",
+    build_setting_default = ":foo1_target",
+)
+sh_library(
+    name = "foo1_target",
+    srcs = ["incompatible.sh"],
+    target_compatible_with = [":foo1"],
+)
+platform(
+    name = "platform_foo2",
+    parents = ["${default_host_platform}"],
+    constraint_values = [
+        ":foo2",
+    ],
+)
+EOF
+
+  cd target_skipping || fail "couldn't cd into workspace"
+  bazel build \
+    --show_result=10 \
+    --host_platform=@//target_skipping:platform_foo2 \
+    --platforms=@//target_skipping:platform_foo2 \
+    //target_skipping:my_label_flag &> "${TEST_log}" && fail "Bazel succeeded unexpectedly."
+    expect_log 'Target //target_skipping:my_label_flag is incompatible and cannot be built'
+    expect_log '^ERROR: Build did NOT complete successfully'
+}
+
+# Regression test for https://github.com/bazelbuild/bazel/issues/23003.
+function test_building_label_flag_with_compatible_ref_succeeds() {
+  touch target_skipping/incompatible.sh
+  # Not using 'EOF' because injecting default_host_platform
+  cat > target_skipping/BUILD <<EOF
+constraint_setting(name = "foo_version")
+constraint_value(
+    name = "foo1",
+    constraint_setting = ":foo_version",
+)
+constraint_value(
+    name = "foo2",
+    constraint_setting = ":foo_version",
+)
+label_flag(
+    name = "my_label_flag",
+    build_setting_default = ":foo1_target",
+)
+sh_library(
+    name = "foo1_target",
+    srcs = ["incompatible.sh"],
+    target_compatible_with = [":foo1"],
+)
+platform(
+    name = "platform_foo1",
+    parents = ["${default_host_platform}"],
+    constraint_values = [
+        ":foo1",
+    ],
+)
+EOF
+
+  cd target_skipping || fail "couldn't cd into workspace"
+  bazel build \
+    --show_result=10 \
+    --host_platform=@//target_skipping:platform_foo1 \
+    --platforms=@//target_skipping:platform_foo1 \
+    //target_skipping:my_label_flag &> "${TEST_log}" || fail "Bazel failed unexpectedly."
+  expect_log 'Build completed successfully, '
+}
+
+# Regression test for https://github.com/bazelbuild/bazel/issues/23003.
+function test_building_label_flag_with_incompatible_ref_implicity_is_skipped() {
+  touch target_skipping/incompatible.sh
+  touch target_skipping/mytarget.sh
+  chmod u+x target_skipping/mytarget.sh
+
+  # Not using 'EOF' because injecting default_host_platform
+  cat > target_skipping/BUILD <<EOF
+constraint_setting(name = "foo_version")
+constraint_value(
+    name = "foo1",
+    constraint_setting = ":foo_version",
+)
+constraint_value(
+    name = "foo2",
+    constraint_setting = ":foo_version",
+)
+label_flag(
+    name = "my_label_flag",
+    build_setting_default = ":foo1_target",
+)
+sh_library(
+    name = "foo1_target",
+    srcs = ["incompatible.sh"],
+    target_compatible_with = [":foo1"],
+)
+sh_binary(
+    name = "mytarget",
+    srcs = ["mytarget.sh"],
+)
+platform(
+    name = "platform_foo2",
+    parents = ["${default_host_platform}"],
+    constraint_values = [
+        ":foo2",
+    ],
+)
+EOF
+
+  cd target_skipping || fail "couldn't cd into workspace"
+  bazel build \
+    --show_result=10 \
+    --host_platform=@//target_skipping:platform_foo2 \
+    --platforms=@//target_skipping:platform_foo2 \
+    //target_skipping:all &> "${TEST_log}" || fail "Bazel failed unexpectedly."
+  expect_log 'Target //target_skipping:my_label_flag was skipped'
+  expect_log 'Target //target_skipping:foo1_target was skipped'
+  expect_log 'Target //target_skipping:mytarget up-to-date'
+  expect_log 'Build completed successfully, '
+
 }
 
 run_suite "target_compatible_with tests"

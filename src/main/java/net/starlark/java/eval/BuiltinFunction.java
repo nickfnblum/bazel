@@ -79,6 +79,17 @@ public final class BuiltinFunction implements StarlarkCallable {
         obj instanceof String ? StringModule.INSTANCE : obj, vector, thread.mutability());
   }
 
+  @Override
+  public Object positionalOnlyCall(StarlarkThread thread, Object... positional)
+      throws EvalException, InterruptedException {
+    MethodDescriptor desc = getMethodDescriptor(thread.getSemantics());
+    Object[] vector = getArgumentVector(thread, desc, positional, EMPTY);
+    return desc.call(
+        obj instanceof String ? StringModule.INSTANCE : obj, vector, thread.mutability());
+  }
+
+  private static final Object[] EMPTY = {};
+
   private MethodDescriptor getMethodDescriptor(StarlarkSemantics semantics) {
     MethodDescriptor desc = this.desc;
     if (desc == null) {
@@ -128,9 +139,11 @@ public final class BuiltinFunction implements StarlarkCallable {
    * @param thread the Starlark thread for the call
    * @param loc the location of the call expression, or BUILTIN for calls from Java
    * @param desc descriptor for the StarlarkMethod-annotated method
-   * @param positional a list of positional arguments
+   * @param positional an array of positional arguments; as an optimization, in simple cases, this
+   *     array may be reused as the method's return value
    * @param named a list of named arguments, as alternating Strings/Objects. May contain dups.
-   * @return the array of arguments which may be passed to {@link MethodDescriptor#call}
+   * @return the array of arguments which may be passed to {@link MethodDescriptor#call}. It is
+   *     unsafe to mutate the returned array.
    * @throws EvalException if the given set of arguments are invalid for the given method. For
    *     example, if any arguments are of unexpected type, or not all mandatory parameters are
    *     specified by the user
@@ -155,6 +168,16 @@ public final class BuiltinFunction implements StarlarkCallable {
     // are instead assigned their flag-disabled values.
 
     ParamDescriptor[] parameters = desc.getParameters();
+
+    // Fast case: we only accept positionals and can reuse `positional` as the Java args vector.
+    // Note that StringModule methods, which are treated specially below, will never match this case
+    // since their `self` parameter is restricted to String and thus
+    // isPositionalsReusableAsCallArgsVectorIfArgumentCountValid() would be false.
+    if (desc.isPositionalsReusableAsJavaArgsVectorIfArgumentCountValid()
+        && positional.length == parameters.length
+        && named.length == 0) {
+      return positional;
+    }
 
     // Allocate argument vector.
     int n = parameters.length;

@@ -94,6 +94,8 @@ public class Rule implements Target, DependencyFilter.AttributeInfoProvider {
 
   private static final OutputFile[] NO_OUTPUTS = new OutputFile[0];
 
+  public static final String IS_EXECUTABLE_ATTRIBUTE_NAME = "$is_executable";
+
   private final Package pkg;
   private final Label label;
   private final RuleClass ruleClass;
@@ -196,11 +198,6 @@ public class Rule implements Target, DependencyFilter.AttributeInfoProvider {
   }
 
   @Override
-  public String getName() {
-    return label.getName();
-  }
-
-  @Override
   public Package getPackage() {
     return pkg;
   }
@@ -279,12 +276,10 @@ public class Rule implements Target, DependencyFilter.AttributeInfoProvider {
    * Returns true if the given attribute is configurable.
    */
   public boolean isConfigurableAttribute(String attributeName) {
-    Attribute attribute = ruleClass.getAttributeByNameMaybe(attributeName);
     // TODO(murali): This method should be property of ruleclass not rule instance.
     // Further, this call to AbstractAttributeMapper.isConfigurable is delegated right back
     // to this instance!
-    return attribute != null
-        && AbstractAttributeMapper.isConfigurable(this, attributeName, attribute.getType());
+    return AbstractAttributeMapper.isConfigurable(this, attributeName);
   }
 
   /**
@@ -423,17 +418,6 @@ public class Rule implements Target, DependencyFilter.AttributeInfoProvider {
    */
 
   /**
-   * Returns the default value for the attribute {@code attrName}, which may be of any type, but
-   * must exist (an exception is thrown otherwise).
-   */
-  public Object getAttrDefaultValue(String attrName) {
-    Object defaultValue = ruleClass.getAttributeByName(attrName).getDefaultValue(this);
-    // Computed defaults not expected here.
-    Preconditions.checkState(!(defaultValue instanceof Attribute.ComputedDefault));
-    return defaultValue;
-  }
-
-  /**
    * Returns true iff the rule class has an attribute with the given name and type.
    *
    * <p>Note: RuleContext also has isAttrDefined(), which takes Aspects into account. Whenever
@@ -551,23 +535,22 @@ public class Rule implements Target, DependencyFilter.AttributeInfoProvider {
       // compute the value.
       return isFrozen() ? attr.getDefaultValue(this) : null;
     }
+    if (attr.isMaterializing()) {
+      checkState(isFrozen(), "Mutable rule missing LateBoundDefault");
+      return attr.getMaterializer();
+    }
     if (attr.isLateBound()) {
       // Frozen rules don't store late bound defaults.
       checkState(isFrozen(), "Mutable rule missing LateBoundDefault");
       return attr.getLateBoundDefault();
     }
-    switch (attr.getName()) {
-      case GENERATOR_FUNCTION:
-        return interiorCallStack != null ? interiorCallStack.functionName() : "";
-      case GENERATOR_LOCATION:
-        return interiorCallStack != null ? getRelativeLocation() : "";
-      case GENERATOR_NAME:
-        return generatorNamePrefixLength > 0
-            ? getName().substring(0, generatorNamePrefixLength)
-            : "";
-      default:
-        return attr.getDefaultValue(this);
-    }
+    return switch (attr.getName()) {
+      case GENERATOR_FUNCTION -> interiorCallStack != null ? interiorCallStack.functionName() : "";
+      case GENERATOR_LOCATION -> interiorCallStack != null ? getRelativeLocation() : "";
+      case GENERATOR_NAME ->
+          generatorNamePrefixLength > 0 ? getName().substring(0, generatorNamePrefixLength) : "";
+      default -> attr.getDefaultValue(this);
+    };
   }
 
   /**
@@ -579,21 +562,21 @@ public class Rule implements Target, DependencyFilter.AttributeInfoProvider {
   @Nullable
   Object getAttrIfStored(int attrIndex) {
     checkPositionIndex(attrIndex, attrCount() - 1);
-    switch (getAttrState()) {
-      case MUTABLE:
-        return attrValues[attrIndex];
-      case FROZEN_SMALL:
+    return switch (getAttrState()) {
+      case MUTABLE -> attrValues[attrIndex];
+      case FROZEN_SMALL -> {
         int index = binarySearchAttrBytes(0, attrIndex, 0x7f);
-        return index < 0 ? null : attrValues[index];
-      case FROZEN_LARGE:
+        yield index < 0 ? null : attrValues[index];
+      }
+      case FROZEN_LARGE -> {
         if (attrBytes.length == 0) {
-          return null;
+          yield null;
         }
         int bitSetSize = bitSetSize();
-        index = binarySearchAttrBytes(bitSetSize, attrIndex, 0xff);
-        return index < 0 ? null : attrValues[index - bitSetSize];
-    }
-    throw new AssertionError();
+        int index = binarySearchAttrBytes(bitSetSize, attrIndex, 0xff);
+        yield index < 0 ? null : attrValues[index - bitSetSize];
+      }
+    };
   }
 
   /**
@@ -635,15 +618,13 @@ public class Rule implements Target, DependencyFilter.AttributeInfoProvider {
     if (attrIndex == null) {
       return false;
     }
-    switch (getAttrState()) {
-      case MUTABLE:
-      case FROZEN_LARGE:
-        return getExplicitBit(attrIndex);
-      case FROZEN_SMALL:
+    return switch (getAttrState()) {
+      case MUTABLE, FROZEN_LARGE -> getExplicitBit(attrIndex);
+      case FROZEN_SMALL -> {
         int index = binarySearchAttrBytes(0, attrIndex, 0x7f);
-        return index >= 0 && (attrBytes[index] & 0x80) != 0;
-    }
-    throw new AssertionError();
+        yield index >= 0 && (attrBytes[index] & 0x80) != 0;
+      }
+    };
   }
 
   /** Returns index into {@link #attrBytes} for {@code attrIndex}, or -1 if not found */
@@ -904,16 +885,6 @@ public class Rule implements Target, DependencyFilter.AttributeInfoProvider {
   }
 
   /**
-   * Check if this rule is valid according to the validityPredicate of its RuleClass.
-   */
-  void checkValidityPredicate(EventHandler eventHandler) {
-    PredicateWithMessage<Rule> predicate = ruleClass.getValidityPredicate();
-    if (!predicate.apply(this)) {
-      reportError(predicate.getErrorReason(this), eventHandler);
-    }
-  }
-
-  /**
    * Collects the output files (both implicit and explicit). Must be called before the output
    * accessors methods can be used, and must be called only once.
    */
@@ -1096,21 +1067,45 @@ public class Rule implements Target, DependencyFilter.AttributeInfoProvider {
   }
 
   /**
-   * Returns the effective visibility of this rule. For most rules, visibility is computed from
-   * these sources in this order of preference:
-   *
-   * <ol>
-   *   <li>'visibility' attribute
-   *   <li>Package default visibility ('default_visibility' attribute of package() declaration)
-   * </ol>
+   * Implementation of {@link #getRawVisibility} that avoids constructing a {@code RuleVisibility}.
+   */
+  @Nullable
+  @SuppressWarnings("unchecked")
+  private List<Label> getRawVisibilityLabels() {
+    Integer visibilityIndex = ruleClass.getAttributeIndex("visibility");
+    if (visibilityIndex == null) {
+      return null;
+    }
+    return (List<Label>) getAttrIfStored(visibilityIndex);
+  }
+
+  @Override
+  @Nullable
+  public RuleVisibility getRawVisibility() {
+    List<Label> rawLabels = getRawVisibilityLabels();
+    // The attribute value was already validated when it was set, so call the unchecked method.
+    return rawLabels != null ? RuleVisibility.parseUnchecked(rawLabels) : null;
+  }
+
+  /**
+   * Retrieves the package's default visibility, or for certain rule classes, injects a different
+   * default visibility.
    */
   @Override
-  public RuleVisibility getVisibility() {
-    List<Label> rawLabels = getRawVisibilityLabels();
-    return rawLabels == null
-        ? getDefaultVisibility()
-        // The attribute value was already validated when it was set, so call the unchecked method.
-        : RuleVisibility.parseUnchecked(rawLabels);
+  public RuleVisibility getDefaultVisibility() {
+    if (ruleClass.getName().equals("bind")) {
+      return RuleVisibility.PUBLIC; // bind rules are always public.
+    }
+    // Temporary logic to relax config_setting's visibility enforcement while depot migrations set
+    // visibility settings properly (legacy code may have visibility settings that would break if
+    // enforced). See https://github.com/bazelbuild/bazel/issues/12669. Ultimately this entire
+    // conditional should be removed.
+    if (ruleClass.getName().equals("config_setting")
+        && pkg.getConfigSettingVisibilityPolicy() == ConfigSettingVisibilityPolicy.DEFAULT_PUBLIC) {
+      return RuleVisibility.PUBLIC; // Default: //visibility:public.
+    }
+
+    return Target.super.getDefaultVisibility();
   }
 
   @Override
@@ -1130,32 +1125,7 @@ public class Rule implements Target, DependencyFilter.AttributeInfoProvider {
   @Override
   public List<Label> getVisibilityDeclaredLabels() {
     List<Label> rawLabels = getRawVisibilityLabels();
-    return rawLabels == null ? getDefaultVisibility().getDeclaredLabels() : rawLabels;
-  }
-
-  @Nullable
-  @SuppressWarnings("unchecked")
-  private List<Label> getRawVisibilityLabels() {
-    Integer visibilityIndex = ruleClass.getAttributeIndex("visibility");
-    if (visibilityIndex == null) {
-      return null;
-    }
-    return (List<Label>) getAttrIfStored(visibilityIndex);
-  }
-
-  private RuleVisibility getDefaultVisibility() {
-    if (ruleClass.getName().equals("bind")) {
-      return RuleVisibility.PUBLIC; // bind rules are always public.
-    }
-    // Temporary logic to relax config_setting's visibility enforcement while depot migrations set
-    // visibility settings properly (legacy code may have visibility settings that would break if
-    // enforced). See https://github.com/bazelbuild/bazel/issues/12669. Ultimately this entire
-    // conditional should be removed.
-    if (ruleClass.getName().equals("config_setting")
-        && pkg.getConfigSettingVisibilityPolicy() == ConfigSettingVisibilityPolicy.DEFAULT_PUBLIC) {
-      return RuleVisibility.PUBLIC; // Default: //visibility:public.
-    }
-    return pkg.getPackageArgs().defaultVisibility();
+    return rawLabels != null ? rawLabels : getDefaultVisibility().getDeclaredLabels();
   }
 
   @Override
@@ -1169,7 +1139,7 @@ public class Rule implements Target, DependencyFilter.AttributeInfoProvider {
         && isAttributeValueExplicitlySpecified("distribs")) {
       return NonconfigurableAttributeMapper.of(this).get("distribs", BuildType.DISTRIBUTIONS);
     } else {
-      return pkg.getPackageArgs().distribs();
+      return License.DEFAULT_DISTRIB;
     }
   }
 
@@ -1253,6 +1223,11 @@ public class Rule implements Target, DependencyFilter.AttributeInfoProvider {
   }
 
   @Override
+  public boolean isForDependencyResolution() {
+    return getRuleClassObject().isDependencyResolutionRule();
+  }
+
+  @Override
   public AdvertisedProviderSet getAdvertisedProviders() {
     return getRuleClassObject().getAdvertisedProviders();
   }
@@ -1281,25 +1256,22 @@ public class Rule implements Target, DependencyFilter.AttributeInfoProvider {
    *
    * <ol>
    *   <li>The rule uses toolchains by definition ({@link
-   *       RuleClass.Builder#useToolchainResolution(ToolchainResolutionMode)}
+   *       RuleClass.Builder#toolchainResolutionMode(ToolchainResolutionMode)}
    *   <li>The rule instance has a select() or target_compatible_with attribute, which means it may
    *       depend on target platform properties that are only provided when toolchain resolution is
    *       enabled.
    * </ol>
    */
   public boolean useToolchainResolution() {
-    ToolchainResolutionMode mode = ruleClass.useToolchainResolution();
-    if (mode.isActive()) {
-      return true;
-    } else if (mode == ToolchainResolutionMode.ENABLED_ONLY_FOR_COMMON_LOGIC) {
-      RawAttributeMapper attr = RawAttributeMapper.of(this);
-      return ((attr.has(RuleClass.CONFIG_SETTING_DEPS_ATTRIBUTE)
-              && !attr.get(RuleClass.CONFIG_SETTING_DEPS_ATTRIBUTE, BuildType.LABEL_LIST).isEmpty())
-          || (attr.has(RuleClass.TARGET_COMPATIBLE_WITH_ATTR)
-              && !attr.get(RuleClass.TARGET_COMPATIBLE_WITH_ATTR, BuildType.LABEL_LIST).isEmpty()));
-    } else {
-      return false;
+    return ruleClass.useToolchainResolution(this);
+  }
+
+  public boolean isExecutable() {
+    if (getRuleClassObject().hasAttr(IS_EXECUTABLE_ATTRIBUTE_NAME, Type.BOOLEAN)) {
+      return NonconfigurableAttributeMapper.of(this)
+          .get(IS_EXECUTABLE_ATTRIBUTE_NAME, Type.BOOLEAN);
     }
+    return false;
   }
 
   public RepositoryName getRepository() {
@@ -1401,6 +1373,11 @@ public class Rule implements Target, DependencyFilter.AttributeInfoProvider {
     @Override
     public boolean isTestOnly() {
       return isTestOnly;
+    }
+
+    @Override
+    public boolean isForDependencyResolution() {
+      return ruleClassData.isDependencyResolutionRule();
     }
 
     @Override

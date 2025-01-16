@@ -15,9 +15,9 @@
 package com.google.devtools.build.lib.rules.java;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static com.google.devtools.build.lib.packages.Type.STRING_LIST;
+import static com.google.devtools.build.lib.packages.Types.STRING_LIST;
+import static java.util.Objects.requireNonNull;
 
-import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Streams;
 import com.google.devtools.build.lib.analysis.RuleContext;
@@ -30,6 +30,7 @@ import com.google.devtools.build.lib.packages.AttributeMap;
 import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
 import com.google.devtools.build.lib.packages.StructImpl;
 import com.google.devtools.build.lib.rules.java.JavaInfo.JavaInfoInternalProvider;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.starlarkbuildapi.java.JavaModuleFlagsProviderApi;
 import java.util.List;
 import java.util.stream.Stream;
@@ -41,18 +42,18 @@ import net.starlark.java.eval.Starlark;
  * Provides information about {@code --add-exports=} and {@code --add-opens=} flags for Java
  * targets.
  */
-@AutoValue
-abstract class JavaModuleFlagsProvider
+@AutoCodec
+record JavaModuleFlagsProvider(NestedSet<String> addExports, NestedSet<String> addOpens)
     implements JavaInfoInternalProvider, JavaModuleFlagsProviderApi {
+  JavaModuleFlagsProvider {
+    requireNonNull(addExports, "addExports");
+    requireNonNull(addOpens, "addOpens");
+  }
 
   @Override
   public boolean isImmutable() {
     return true;
   }
-
-  public abstract NestedSet<String> addExports();
-
-  public abstract NestedSet<String> addOpens();
 
   @Override
   public Depset /*String*/ getAddExports() {
@@ -66,7 +67,7 @@ abstract class JavaModuleFlagsProvider
 
   public static JavaModuleFlagsProvider create(
       NestedSet<String> addExports, NestedSet<String> addOpens) {
-    return new AutoValue_JavaModuleFlagsProvider(addExports, addOpens);
+    return new JavaModuleFlagsProvider(addExports, addOpens);
   }
 
   public static final JavaModuleFlagsProvider EMPTY =
@@ -127,10 +128,9 @@ abstract class JavaModuleFlagsProvider
     Object value = javaInfo.getValue("module_flags_info");
     if (value == null || value == Starlark.NONE) {
       return null;
-    } else if (value instanceof JavaModuleFlagsProvider) {
-      return (JavaModuleFlagsProvider) value;
-    } else if (value instanceof StructImpl) {
-      StructImpl moduleFlagsInfo = (StructImpl) value;
+    } else if (value instanceof JavaModuleFlagsProvider javaModuleFlagsProvider) {
+      return javaModuleFlagsProvider;
+    } else if (value instanceof StructImpl moduleFlagsInfo) {
       return JavaModuleFlagsProvider.create(
           moduleFlagsInfo.getValue("add_exports", Depset.class).toList(String.class),
           moduleFlagsInfo.getValue("add_opens", Depset.class).toList(String.class),

@@ -45,6 +45,7 @@ import com.google.devtools.build.lib.skyframe.SkyframeExecutor;
 import com.google.devtools.build.lib.testutil.FoundationTestCase;
 import com.google.devtools.build.lib.testutil.MoreAsserts;
 import com.google.devtools.build.lib.testutil.SkyframeExecutorTestHelper;
+import com.google.devtools.build.lib.testutil.TestConstants;
 import com.google.devtools.build.lib.testutil.TestUtils;
 import com.google.devtools.build.lib.util.AbruptExitException;
 import com.google.devtools.build.lib.util.io.TimestampGranularityMonitor;
@@ -70,7 +71,25 @@ public class PackageLoadingTest extends FoundationTestCase {
 
   @Before
   public final void initializeSkyframeExecutor() throws Exception {
-    initializeSkyframeExecutor(/*doPackageLoadingChecks=*/ true);
+    initializeSkyframeExecutor(/* doPackageLoadingChecks= */ true);
+  }
+
+  @Before
+  public final void fooLibrary() throws Exception {
+    scratch.file("test_defs/BUILD");
+    scratch.file(
+        "test_defs/foo_library.bzl",
+        """
+        def _impl(ctx):
+          pass
+        foo_library = rule(
+          implementation = _impl,
+          attrs = {
+            "srcs": attr.label_list(allow_files=True),
+            "deps": attr.label_list(),
+          },
+        )
+        """);
   }
 
   /**
@@ -134,6 +153,7 @@ public class PackageLoadingTest extends FoundationTestCase {
         OptionsParser.builder()
             .optionsClasses(PackageOptions.class, BuildLanguageOptions.class)
             .build();
+    parser.parse(TestConstants.PRODUCT_SPECIFIC_BUILD_LANG_OPTIONS);
     parser.parse("--default_visibility=public");
     parser.parse(options);
 
@@ -360,10 +380,11 @@ public class PackageLoadingTest extends FoundationTestCase {
 
   protected Path createBuildFile(Path workspace, String packageName, String... targets)
       throws IOException {
-    String[] lines = new String[targets.length];
+    String[] lines = new String[targets.length + 1];
 
+    lines[0] = "load('//test_defs:foo_library.bzl', 'foo_library')";
     for (int i = 0; i < targets.length; i++) {
-      lines[i] = "sh_library(name='" + targets[i] + "')";
+      lines[i + 1] = "foo_library(name='" + targets[i] + "')";
     }
 
     return scratch.file(workspace + "/" + packageName + "/BUILD", lines);
@@ -403,7 +424,15 @@ public class PackageLoadingTest extends FoundationTestCase {
   @Test
   public void testLocationForLabelCrossingSubpackage() throws Exception {
     scratch.file("e/f/BUILD");
-    scratch.file("e/BUILD", "# Whatever", "filegroup(name='fg', srcs=['f/g'])");
+    scratch.file(
+        "e/BUILD",
+        """
+        # Whatever
+        filegroup(
+            name = "fg",
+            srcs = ["f/g"],
+        )
+        """);
     reporter.removeHandler(failFastHandler);
 
     getPackage("e");
@@ -545,8 +574,14 @@ public class PackageLoadingTest extends FoundationTestCase {
   public void testPackageFeatures() throws Exception {
     scratch.file(
         "peach/BUILD",
-        "package(features = ['crosstool_default_false'])",
-        "cc_library(name = 'cc', srcs = ['cc.cc'])");
+        """
+        package(features = ["crosstool_default_false"])
+
+        cc_library(
+            name = "cc",
+            srcs = ["cc.cc"],
+        )
+        """);
     assertThat(getPackage("peach").getPackageArgs().features())
         .isEqualTo(FeatureSet.parse(ImmutableList.of("crosstool_default_false")));
   }
@@ -556,7 +591,16 @@ public class PackageLoadingTest extends FoundationTestCase {
     reporter.removeHandler(failFastHandler);
     setOptions("--package_path=.:.");
     scratch.file("x/y/BUILD");
-    scratch.file("x/BUILD", "genrule(name = 'x',", "srcs = [],", "outs = ['y/z.h'],", "cmd  = '')");
+    scratch.file(
+        "x/BUILD",
+        """
+        genrule(
+            name = "x",
+            srcs = [],
+            outs = ["y/z.h"],
+            cmd = "",
+        )
+        """);
     Package p = getPackage("x");
     assertThat(p.containsErrors()).isTrue();
   }
@@ -566,11 +610,22 @@ public class PackageLoadingTest extends FoundationTestCase {
   public void testDeterminismOfInputFileLocation() throws Exception {
     scratch.file(
         "p/BUILD",
-        "sh_library(name = 't1', srcs = ['f.sh'])",
-        "sh_library(name = 't2', srcs = ['f.sh'])");
+        """
+        load('//test_defs:foo_library.bzl', 'foo_library')
+
+        foo_library(
+            name = "t1",
+            srcs = ["f.sh"],
+        )
+
+        foo_library(
+            name = "t2",
+            srcs = ["f.sh"],
+        )
+        """);
     Package p = getPackage("p");
     InputFile f = (InputFile) p.getTarget("f.sh");
-    assertThat(f.getLocation().line()).isEqualTo(1);
+    assertThat(f.getLocation().line()).isEqualTo(3);
   }
 
   @Test
@@ -578,7 +633,15 @@ public class PackageLoadingTest extends FoundationTestCase {
       throws Exception {
     reporter.removeHandler(failFastHandler);
     scratch.file("p/sub/BUILD");
-    scratch.file("p/BUILD", "sh_library(name = 'sub/a')", "sh_library(name = 'sub/b')");
+    scratch.file(
+        "p/BUILD",
+        """
+        load('//test_defs:foo_library.bzl', 'foo_library')
+
+        foo_library(name = "sub/a")
+
+        foo_library(name = "sub/b")
+        """);
     Package p = getPackage("p");
     assertThat(p.getFailureDetail().getPackageLoading().getCode())
         .isEqualTo(PackageLoading.Code.LABEL_CROSSES_PACKAGE_BOUNDARY);

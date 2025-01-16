@@ -29,7 +29,9 @@ java_binary(
 native_image(
     name = "turbine_direct_graal",
     executable_name = select({
-        "@bazel_tools//src/conditions:windows": "%target%.exe",
+        # TODO(cushon): restore .exe suffix on windows
+        # see https://github.com/sgammon/rules_graalvm/issues/324
+        "@bazel_tools//src/conditions:windows": "%target%",
         "//conditions:default": "%target%",
     }),
     extra_args = [
@@ -50,6 +52,12 @@ native_image(
         "@platforms//os:linux": [
             # Statically link zlib but not glibc.
             "-H:+StaticExecutableWithDynamicLibC",
+        ],
+        "@platforms//os:windows": [
+            # The charset specified by sun.jnu.encoding is not automatically included in the image,
+            # but may be one of the legacy code pages on Windows, which aren't added by default.
+            # https://github.com/oracle/graal/pull/10232
+            "-H:+AddAllCharsets",
         ],
         "//conditions:default": [],
     }) + select({

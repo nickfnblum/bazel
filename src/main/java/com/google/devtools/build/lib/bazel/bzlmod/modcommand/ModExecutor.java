@@ -18,6 +18,7 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.ImmutableSortedMap.toImmutableSortedMap;
 import static com.google.common.collect.ImmutableSortedSet.toImmutableSortedSet;
 import static java.util.Comparator.reverseOrder;
+import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.joining;
 
 import com.google.auto.value.AutoValue;
@@ -140,7 +141,8 @@ public class ModExecutor {
   }
 
   public void showExtension(
-      ImmutableSet<ModuleExtensionId> extensions, ImmutableSet<ModuleKey> fromUsages) {
+      ImmutableSet<ModuleExtensionId> extensions, ImmutableSet<ModuleKey> fromUsages)
+      throws InvalidArgumentException {
     for (ModuleExtensionId extension : extensions) {
       displayExtension(extension, fromUsages);
     }
@@ -409,9 +411,9 @@ public class ModExecutor {
     while (!toVisit.isEmpty()) {
       ModuleKey key = toVisit.pop();
       AugmentedModule module = depGraph.get(key);
-      Set<ModuleKey> parents = new HashSet<>(module.getDependants());
+      Set<ModuleKey> parents = new HashSet<>(module.dependants());
       if (options.includeUnused) {
-        parents.addAll(module.getOriginalDependants());
+        parents.addAll(module.originalDependants());
       }
       for (ModuleKey parent : parents) {
         if (isBuiltin(parent) && !options.includeBuiltin) {
@@ -444,7 +446,9 @@ public class ModExecutor {
         if (!presentModules.contains(usage.getKey())) {
           continue;
         }
-        modulesToImportsBuilder.putAll(usage.getKey(), usage.getValue().getImports().values());
+        for (ModuleExtensionUsage.Proxy proxy : usage.getValue().getProxies()) {
+          modulesToImportsBuilder.putAll(usage.getKey(), proxy.getImports().values());
+        }
       }
       resultBuilder.put(extension, modulesToImportsBuilder.build().inverse());
     }
@@ -461,11 +465,15 @@ public class ModExecutor {
   }
 
   /** Helper to display show_extension info. */
-  private void displayExtension(ModuleExtensionId extension, ImmutableSet<ModuleKey> fromUsages) {
-    printer.printf("## %s:\n", extension.asTargetString());
+  private void displayExtension(ModuleExtensionId extension, ImmutableSet<ModuleKey> fromUsages)
+      throws InvalidArgumentException {
+    printer.printf("## %s:\n", extension.toString());
     printer.println();
     printer.println("Fetched repositories:");
-    // TODO(wyv): if `extension` doesn't exist, we crash. We should report a good error instead!
+    if (!extensionRepoImports.containsKey(extension)) {
+      throw new InvalidArgumentException(
+          String.format("No extension %s exists in the dependency graph", extension));
+    }
     ImmutableSortedSet<String> usedRepos =
         ImmutableSortedSet.copyOf(extensionRepoImports.get(extension).keySet());
     ImmutableSortedSet<String> unusedRepos =
@@ -491,34 +499,40 @@ public class ModExecutor {
         continue;
       }
       ModuleExtensionUsage usage = extensionUsages.get(extension, module);
+      // TODO: maybe consider printing each proxy separately? Might be relevant for included
+      //  segments.
       printer.printf(
           "## Usage in %s from %s:%s\n",
-          module, usage.getLocation().file(), usage.getLocation().line());
+          module,
+          usage.getProxies().getFirst().getLocation().file(),
+          usage.getProxies().getFirst().getLocation().line());
       for (Tag tag : usage.getTags()) {
         printer.printf(
             "%s.%s(%s)\n",
-            extension.getExtensionName(),
+            extension.extensionName(),
             tag.getTagName(),
             tag.getAttributeValues().attributes().entrySet().stream()
                 .map(e -> String.format("%s=%s", e.getKey(), Starlark.repr(e.getValue())))
                 .collect(joining(", ")));
       }
       printer.printf("use_repo(\n");
-      printer.printf("  %s,\n", extension.getExtensionName());
-      for (Entry<String, String> repo : usage.getImports().entrySet()) {
-        printer.printf(
-            "  %s,\n",
-            repo.getKey().equals(repo.getValue())
-                ? String.format("\"%s\"", repo.getKey())
-                : String.format("%s=\"%s\"", repo.getKey(), repo.getValue()));
+      printer.printf("  %s,\n", extension.extensionName());
+      for (ModuleExtensionUsage.Proxy proxy : usage.getProxies()) {
+        for (Entry<String, String> repo : proxy.getImports().entrySet()) {
+          printer.printf(
+              "  %s,\n",
+              repo.getKey().equals(repo.getValue())
+                  ? String.format("\"%s\"", repo.getKey())
+                  : String.format("%s=\"%s\"", repo.getKey(), repo.getValue()));
+        }
       }
       printer.printf(")\n\n");
     }
   }
 
   private boolean isBuiltin(ModuleKey key) {
-    return key.equals(ModuleKey.create("bazel_tools", Version.EMPTY))
-        || key.equals(ModuleKey.create("local_config_platform", Version.EMPTY));
+    return key.equals(new ModuleKey("bazel_tools", Version.EMPTY))
+        || key.equals(new ModuleKey("local_config_platform", Version.EMPTY));
   }
 
   /** A node representing a module that forms the result graph. */
@@ -543,24 +557,24 @@ public class ModExecutor {
       TRUE
     }
 
-    /** Detailed edge type for the {@link ResultNode} graph. */
-    @AutoValue
-    public abstract static class NodeMetadata {
-      /**
-       * Whether the node should be expanded from this edge (the same node can appear in multiple
-       * places in a flattened graph).
-       */
-      public abstract IsExpanded isExpanded();
-
-      /** Whether the edge is a direct edge or an indirect (transitive) one. */
-      public abstract IsIndirect isIndirect();
-
-      /** Whether the edge is cycling back inside the flattened graph. */
-      public abstract IsCycle isCycle();
+    /**
+     * Detailed edge type for the {@link ResultNode} graph.
+     *
+     * @param isExpanded Whether the node should be expanded from this edge (the same node can
+     *     appear in multiple places in a flattened graph).
+     * @param isIndirect Whether the edge is a direct edge or an indirect (transitive) one.
+     * @param isCycle Whether the edge is cycling back inside the flattened graph.
+     */
+    public record NodeMetadata(IsExpanded isExpanded, IsIndirect isIndirect, IsCycle isCycle) {
+      public NodeMetadata {
+        requireNonNull(isExpanded, "isExpanded");
+        requireNonNull(isIndirect, "isIndirect");
+        requireNonNull(isCycle, "isCycle");
+      }
 
       private static NodeMetadata create(
           IsExpanded isExpanded, IsIndirect isIndirect, IsCycle isCycle) {
-        return new AutoValue_ModExecutor_ResultNode_NodeMetadata(isExpanded, isIndirect, isCycle);
+        return new NodeMetadata(isExpanded, isIndirect, isCycle);
       }
     }
 

@@ -50,6 +50,16 @@ public interface TargetData {
     return ImmutableSet.of();
   }
 
+  /**
+   * Returns the name part of the label of the target.
+   *
+   * <p>Equivalent to {@code getLabel().getName()}.
+   */
+  default String getName() {
+    return getLabel().getName();
+  }
+
+  /** Returns the label of the target. */
   Label getLabel();
 
   default boolean isRule() {
@@ -94,7 +104,7 @@ public interface TargetData {
   /**
    * True if the underlying target advertises the required providers.
    *
-   * <p>This is used to determine whether an aspect should propagate to this configured target.
+   * <p>This is used to determine whether an aspect should propagate to this target.
    */
   default boolean satisfies(RequiredProviders required) {
     return false;
@@ -104,6 +114,11 @@ public interface TargetData {
   @Nullable
   default TestTimeout getTestTimeout() {
     return null;
+  }
+
+  /** Whether this target can be made available during dependency resolution. */
+  default boolean isForDependencyResolution() {
+    return false;
   }
 
   default AdvertisedProviderSet getAdvertisedProviders() {

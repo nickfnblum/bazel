@@ -15,13 +15,10 @@ package com.google.devtools.build.lib.actions;
 
 import static com.google.common.truth.Truth.assertThat;
 
-import com.google.devtools.build.lib.actions.SpawnResult.MetadataLog;
 import com.google.devtools.build.lib.actions.SpawnResult.Status;
 import com.google.devtools.build.lib.server.FailureDetails;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.Spawn.Code;
-import com.google.devtools.build.lib.vfs.Path;
-import com.google.devtools.build.lib.vfs.util.FileSystems;
 import com.google.protobuf.ByteString;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -66,7 +63,7 @@ public final class SpawnResultTest {
   }
 
   @Test
-  public void inMemoryContents() throws Exception {
+  public void inMemoryContents() {
     ActionInput output = ActionInputHelper.fromPath("/foo/bar");
     ByteString contents = ByteString.copyFromUtf8("hello world");
 
@@ -78,24 +75,8 @@ public final class SpawnResultTest {
             .setInMemoryOutput(output, contents)
             .build();
 
-    assertThat(ByteString.readFrom(r.getInMemoryOutput(output))).isEqualTo(contents);
+    assertThat(r.getInMemoryOutput(output)).isEqualTo(contents);
     assertThat(r.getInMemoryOutput(null)).isEqualTo(null);
     assertThat(r.getInMemoryOutput(ActionInputHelper.fromPath("/does/not/exist"))).isEqualTo(null);
-  }
-
-  @Test
-  public void getSpawnResultLogs() {
-    SpawnResult.Builder builder =
-        new SpawnResult.Builder().setStatus(Status.SUCCESS).setExitCode(0).setRunnerName("test");
-
-    assertThat(builder.build().getActionMetadataLog()).isNull();
-
-    String logName = "/path/to/logs.txt";
-    Path logPath = FileSystems.getJavaIoFileSystem().getPath(logName);
-    MetadataLog metadataLog = new MetadataLog("test_metadata_log", logPath);
-    SpawnResult withLogs = builder.setActionMetadataLog(metadataLog).build();
-
-    assertThat(withLogs.getActionMetadataLog()).isEqualTo(metadataLog);
-    assertThat(withLogs.getActionMetadataLog().getFilePath()).isEqualTo(logPath);
   }
 }

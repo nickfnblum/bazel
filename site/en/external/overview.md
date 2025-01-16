@@ -55,7 +55,7 @@ repository, and sometimes even used as a synonym of "repository".
 The canonical name a repository is addressable by. Within the context of a
 workspace, each repository has a single canonical name. A target inside a repo
 whose canonical name is `canonical_name` can be addressed by the label
-`@@canonical_name//pac/kage:target` (note the double `@`).
+`@@canonical_name//package:target` (note the double `@`).
 
 The main repository always has the empty string as the canonical name.
 
@@ -66,7 +66,7 @@ This can be thought of as a repo's "nickname": The repo with the canonical name
 `michael` might have the apparent name `mike` in the context of the repo
 `alice`, but might have the apparent name `mickey` in the context of the repo
 `bob`. In this case, a target inside `michael` can be addressed by the label
-`@mike//pac/kage:target` in the context of `alice` (note the single `@`).
+`@mike//package:target` in the context of `alice` (note the single `@`).
 
 Conversely, this can be understood as a **repository mapping**: each repo
 maintains a mapping from "apparent repo name" to a "canonical repo name".
@@ -98,6 +98,18 @@ Normally, Bazel only fetches a repo when it needs something from the repo,
 and the repo hasn't already been fetched. If the repo has already been fetched
 before, Bazel only re-fetches it if its definition has changed.
 
+The `fetch` command can be used to initiate a pre-fetch for a repository,
+target, or all necessary repositories to perform any build. This capability
+enables offline builds using the `--nofetch` option.
+
+The `--fetch` option serves to manage network access. Its default value is true.
+However, when set to false (`--nofetch`), the command will utilize any cached
+version of the dependency, and if none exists, the command will result in
+failure.
+
+See [fetch options](/reference/command-line-reference#fetch-options) for more
+information about controlling fetch.
+
 ### Directory layout {:#directory-layout}
 
 After being fetched, the repo can be found in the subdirectory `external` in the
@@ -112,14 +124,13 @@ ls $(bazel info output_base)/external/{{ '<var>' }} canonical_name {{ '</var>' }
 
 ### REPO.bazel file {:#repo.bazel}
 
-The `REPO.bazel` file is used to mark the topmost boundary of the directory tree
-that constitutes a repo. It doesn't need to contain anything to serve as a repo
-boundary file; however, it can also be used to specify some common attributes
-for all build targets inside the repo.
+The [`REPO.bazel`](/rules/lib/globals/repo) file is used to mark the topmost
+boundary of the directory tree that constitutes a repo. It doesn't need to
+contain anything to serve as a repo boundary file; however, it can also be used
+to specify some common attributes for all build targets inside the repo.
 
 The syntax of a `REPO.bazel` file is similar to `BUILD` files, except that no
-`load` statements are supported, and only a single function, `repo()`, is
-available. `repo()` takes the same arguments as the [`package()`
+`load` statements are supported. The `repo()` function takes the same arguments as the [`package()`
 function](/reference/be/functions#package) in `BUILD` files; whereas `package()`
 specifies common attributes for all build targets inside the package, `repo()`
 analogously does so for all build targets inside the repo.

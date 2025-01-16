@@ -47,7 +47,10 @@ public class TransitiveTraversalFunctionTest extends BuildViewTestCase {
   public void noRepeatedLabelVisitationForTransitiveTraversalFunction() throws Exception {
     // Create a basic package with a target //foo:foo.
     Label label = Label.parseCanonical("//foo:foo");
-    scratch.file("foo/BUILD", "sh_library(name = '" + label.getName() + "')");
+    scratch.file(
+        "foo/BUILD",
+        "load('//test_defs:foo_library.bzl', 'foo_library')",
+        "foo_library(name = '" + label.getName() + "')");
     Package pkg = loadPackage(label.getPackageIdentifier());
     TargetAndErrorIfAny targetAndErrorIfAny =
         new TargetAndErrorIfAny(
@@ -100,7 +103,9 @@ public class TransitiveTraversalFunctionTest extends BuildViewTestCase {
   public void multipleErrorsForTransitiveTraversalFunction() throws Exception {
     Label label = Label.parseCanonical("//foo:foo");
     scratch.file(
-        "foo/BUILD", "sh_library(name = '" + label.getName() + "', deps = [':bar', ':baz'])");
+        "foo/BUILD",
+        "load('//test_defs:foo_library.bzl', 'foo_library')",
+        "foo_library(name = '" + label.getName() + "', deps = [':bar', ':baz'])");
     Package pkg = loadPackage(label.getPackageIdentifier());
     TargetAndErrorIfAny targetAndErrorIfAny =
         new TargetAndErrorIfAny(
@@ -139,7 +144,10 @@ public class TransitiveTraversalFunctionTest extends BuildViewTestCase {
   @Test
   public void selfErrorWins() throws Exception {
     Label label = Label.parseCanonical("//foo:foo");
-    scratch.file("foo/BUILD", "sh_library(name = '" + label.getName() + "', deps = [':bar'])");
+    scratch.file(
+        "foo/BUILD",
+        "load('//test_defs:foo_library.bzl', 'foo_library')",
+        "foo_library(name = '" + label.getName() + "', deps = [':bar'])");
     Package pkg = loadPackage(label.getPackageIdentifier());
     TargetAndErrorIfAny targetAndErrorIfAny =
         new TargetAndErrorIfAny(
@@ -172,26 +180,35 @@ public class TransitiveTraversalFunctionTest extends BuildViewTestCase {
     Label label = Label.parseCanonical("//test:foo");
     scratch.file(
         "test/aspect.bzl",
-        "def _aspect_impl(target, ctx):",
-        "   return struct()",
-        "def _rule_impl(ctx):",
-        "   return struct()",
-        "",
-        "MyAspect = aspect(",
-        "   implementation=_aspect_impl,",
-        "   attr_aspects=['deps'],",
-        "   attrs = { '_extra_deps' : attr.label(default = Label('//foo:bar'))},",
-        ")",
-        "my_rule = rule(",
-        "   implementation=_rule_impl,",
-        "   attrs = { 'attr' : ",
-        "             attr.label_list(mandatory=True, aspects = [MyAspect]) ",
-        "           },",
-        ")");
+        """
+        def _aspect_impl(target, ctx):
+            return []
+
+        def _rule_impl(ctx):
+            return []
+
+        MyAspect = aspect(
+            implementation = _aspect_impl,
+            attr_aspects = ["deps"],
+            attrs = {"_extra_deps": attr.label(default = Label("//foo:bar"))},
+        )
+        my_rule = rule(
+            implementation = _rule_impl,
+            attrs = {
+                "attr": attr.label_list(mandatory = True, aspects = [MyAspect]),
+            },
+        )
+        """);
     scratch.file(
         "test/BUILD",
-        "load('//test:aspect.bzl', 'my_rule')",
-        "my_rule(name = 'foo',attr = [':bad'])");
+        """
+        load("//test:aspect.bzl", "my_rule")
+
+        my_rule(
+            name = "foo",
+            attr = [":bad"],
+        )
+        """);
     Package pkg = loadPackage(label.getPackageIdentifier());
     TargetAndErrorIfAny targetAndErrorIfAny =
         new TargetAndErrorIfAny(

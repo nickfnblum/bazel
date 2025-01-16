@@ -51,11 +51,6 @@ msys*|mingw*|cygwin*)
   ;;
 esac
 
-if "$is_windows"; then
-  export MSYS_NO_PATHCONV=1
-  export MSYS2_ARG_CONV_EXCL="*"
-fi
-
 #### HELPER FUNCTIONS ##################################################
 
 if ! type try_with_timeout >&/dev/null; then
@@ -66,6 +61,7 @@ fi
 
 function set_up() {
     cd ${WORKSPACE_DIR}
+    add_rules_java MODULE.bazel
 }
 
 function tear_down() {
@@ -151,26 +147,16 @@ Genrule=+requires-a,CppCompile=+requires-b,CppCompile=+requires-c \
 
 function test_modify_execution_info_various_types() {
   if [[ "$PRODUCT_NAME" = "bazel" ]]; then
-    cat "$(rlocation "io_bazel/src/test/shell/integration/rules_proto_stanza.txt")" >>WORKSPACE
-    cat >> WORKSPACE << EOF
-load("@rules_proto//proto:repositories.bzl", "rules_proto_dependencies", "rules_proto_toolchains")
-rules_proto_dependencies()
-rules_proto_toolchains()
-
-# @com_google_protobuf//:protoc depends on @io_bazel//third_party/zlib.
-new_local_repository(
-    name = "io_bazel",
-    path = "$(dirname $(dirname $(dirname $(rlocation io_bazel/third_party/zlib/BUILD))))",
-    build_file_content = "# Intentionally left empty.",
-    workspace_file_content = "workspace(name = 'io_bazel')",
-)
-EOF
+    add_rules_python "MODULE.bazel"
+    add_protobuf "MODULE.bazel"
   fi
   local pkg="${FUNCNAME[0]}"
   mkdir -p "$pkg" || fail "mkdir -p $pkg"
   echo "load('//$pkg:shell.bzl', 'starlark_shell')" > "$pkg/BUILD"
   cat >> "$pkg/BUILD" <<'EOF'
+load("@rules_java//java:java_library.bzl", "java_library")
 load("@rules_python//python:py_binary.bzl", "py_binary")
+load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
 
 starlark_shell(
   name = "shelly",

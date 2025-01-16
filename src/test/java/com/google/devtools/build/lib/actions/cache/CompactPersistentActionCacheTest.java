@@ -92,6 +92,24 @@ public class CompactPersistentActionCacheTest {
   }
 
   @Test
+  public void testGetSize() {
+    // initial state.
+    assertThat(cache.size()).isEqualTo(0);
+
+    String key = "key";
+    putKey(key);
+    // the inserted key, and the validation key
+    assertThat(cache.size()).isEqualTo(2);
+
+    cache.remove(key);
+    // the validation key
+    assertThat(cache.size()).isEqualTo(1);
+
+    cache.clear();
+    assertThat(cache.size()).isEqualTo(0);
+  }
+
+  @Test
   public void testSaveDiscoverInputs() throws Exception {
     assertSave(true);
   }
@@ -212,7 +230,7 @@ public class CompactPersistentActionCacheTest {
             .getHashFunction()
             .hashBytes(bytes)
             .asBytes();
-    return RemoteFileArtifactValue.create(
+    return RemoteFileArtifactValue.createWithMaterializationData(
         digest, bytes.length, 1, expireAtEpochMilli, materializationExecPath);
   }
 

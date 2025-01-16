@@ -21,6 +21,8 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib:runtime/command_dispatcher",
         "//src/main/java/com/google/devtools/build/lib/clock",
         "//src/main/java/com/google/devtools/build/lib/server",
+        "//src/main/java/com/google/devtools/build/lib/server:idle_task",
+        "//src/main/java/com/google/devtools/build/lib/server:install_base_garbage_collector",
         "//src/main/java/com/google/devtools/build/lib/server:pid_file_watcher",
         "//src/main/java/com/google/devtools/build/lib/server:shutdown_hooks",
         "//src/main/java/com/google/devtools/build/lib/unix:procmeminfo_parser",
@@ -29,6 +31,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/util/io:io-proto",
         "//src/main/java/com/google/devtools/build/lib/util/io:out-err",
         "//src/main/java/com/google/devtools/build/lib/vfs",
+        "//src/main/java/com/google/devtools/build/lib/vfs:pathfragment",
         "//src/main/java/com/google/devtools/build/lib/vfs/inmemoryfs",
         "//src/main/protobuf:command_server_java_grpc",
         "//src/main/protobuf:command_server_java_proto",
@@ -37,12 +40,12 @@ java_library(
         "//src/test/java/com/google/devtools/build/lib/testutil",
         "//src/test/java/com/google/devtools/build/lib/testutil:TestThread",
         "//src/test/java/com/google/devtools/build/lib/testutil:TestUtils",
+        "//src/test/java/com/google/devtools/build/lib/testutil:external_file_system_lock",
         "//third_party:guava",
         "//third_party:junit4",
         "//third_party:mockito",
         "//third_party:truth",
         "//third_party/grpc-java:grpc-jar",
-        "//third_party/protobuf:protobuf_java",
         "@com_google_protobuf//:protobuf_java",
     ],
 )
@@ -50,6 +53,7 @@ java_library(
 java_test(
     name = "ServerTests",
     size = "medium",
+    shard_count = 3,
     tags = ["requires-network"],  # https://github.com/bazelbuild/bazel/issues/20743
     test_class = "com.google.devtools.build.lib.AllTests",
     runtime_deps = [

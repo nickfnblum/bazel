@@ -15,8 +15,10 @@ package com.google.devtools.build.lib.skyframe.config;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
-import com.google.devtools.build.lib.analysis.producers.BuildConfigurationKeyProducer;
-import com.google.devtools.build.lib.analysis.producers.BuildConfigurationKeyProducer.ResultSink;
+import com.google.devtools.build.lib.analysis.producers.BuildConfigurationKeyMapProducer;
+import com.google.devtools.build.lib.analysis.producers.BuildConfigurationKeyMapProducer.ResultSink;
+import com.google.devtools.build.lib.skyframe.BuildOptionsScopeFunction.BuildOptionsScopeFunctionException;
+import com.google.devtools.build.lib.skyframe.toolchains.PlatformLookupUtil.InvalidPlatformException;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionException;
 import com.google.devtools.build.skyframe.SkyKey;
@@ -27,9 +29,9 @@ import com.google.devtools.common.options.OptionsParsingException;
 import javax.annotation.Nullable;
 
 /** Function that returns a fully updated {@link BuildConfigurationKey}. */
-public class BuildConfigurationKeyFunction implements SkyFunction {
+public final class BuildConfigurationKeyFunction implements SkyFunction {
   /**
-   * {@link BuildConfigurationKeyProducer} works on a {@code Map<String, BuildOptions>}, but this
+   * {@link BuildConfigurationKeyMapProducer} works on a {@code Map<String, BuildOptions>}, but this
    * skyfunction only operates on a single {@link BuildOptions}, so this static key is used to
    * create that map and read the resulting {@link BuildConfigurationKey}.
    */
@@ -45,10 +47,11 @@ public class BuildConfigurationKeyFunction implements SkyFunction {
     Sink sink = new Sink();
     Driver driver =
         new Driver(
-            new BuildConfigurationKeyProducer(
+            new BuildConfigurationKeyMapProducer(
                 sink,
                 /* runAfter= */ StateMachine.DONE,
-                ImmutableMap.of(BUILD_OPTIONS_MAP_SINGLETON_KEY, buildOptions)));
+                ImmutableMap.of(BUILD_OPTIONS_MAP_SINGLETON_KEY, buildOptions),
+                null));
 
     boolean complete = driver.drive(env);
 
@@ -65,18 +68,29 @@ public class BuildConfigurationKeyFunction implements SkyFunction {
       throw new BuildConfigurationKeyFunctionException(e);
     } catch (PlatformMappingException e) {
       throw new BuildConfigurationKeyFunctionException(e);
+    } catch (InvalidPlatformException e) {
+      throw new BuildConfigurationKeyFunctionException(e);
+    } catch (BuildOptionsScopeFunctionException e) {
+      throw new BuildConfigurationKeyFunctionException(e);
     }
   }
 
-  /** Sink implementation to handle results from {@link BuildConfigurationKeyProducer}. */
+  /** Sink implementation to handle results from {@link BuildConfigurationKeyMapProducer}. */
   private static final class Sink implements ResultSink {
     @Nullable private ImmutableMap<String, BuildConfigurationKey> transitionedOptions;
-    @Nullable private OptionsParsingException transitionError;
+    @Nullable private OptionsParsingException optionsParsingException;
     @Nullable private PlatformMappingException platformMappingException;
+    @Nullable private InvalidPlatformException invalidPlatformException;
+    @Nullable private BuildOptionsScopeFunctionException buildOptionsScopeFunctionException;
 
     @Override
-    public void acceptTransitionError(OptionsParsingException e) {
-      this.transitionError = e;
+    public void acceptBuildOptionsScopeFunctionError(BuildOptionsScopeFunctionException e) {
+      this.buildOptionsScopeFunctionException = e;
+    }
+
+    @Override
+    public void acceptOptionsParsingError(OptionsParsingException e) {
+      this.optionsParsingException = e;
     }
 
     @Override
@@ -85,17 +99,33 @@ public class BuildConfigurationKeyFunction implements SkyFunction {
     }
 
     @Override
+    public void acceptPlatformFlagsError(InvalidPlatformException e) {
+      this.invalidPlatformException = e;
+    }
+
+    @Override
     public void acceptTransitionedConfigurations(
         ImmutableMap<String, BuildConfigurationKey> transitionedOptions) {
       this.transitionedOptions = transitionedOptions;
     }
 
-    void checkErrors() throws OptionsParsingException, PlatformMappingException {
-      if (this.transitionError != null) {
-        throw this.transitionError;
+    void checkErrors()
+        throws OptionsParsingException,
+            PlatformMappingException,
+            InvalidPlatformException,
+            BuildOptionsScopeFunctionException {
+      if (this.optionsParsingException != null) {
+        throw this.optionsParsingException;
       }
       if (this.platformMappingException != null) {
         throw this.platformMappingException;
+      }
+      if (this.invalidPlatformException != null) {
+        throw this.invalidPlatformException;
+      }
+
+      if (this.buildOptionsScopeFunctionException != null) {
+        throw this.buildOptionsScopeFunctionException;
       }
     }
 
@@ -117,6 +147,16 @@ public class BuildConfigurationKeyFunction implements SkyFunction {
     public BuildConfigurationKeyFunctionException(
         PlatformMappingException platformMappingException) {
       super(platformMappingException, Transience.PERSISTENT);
+    }
+
+    public BuildConfigurationKeyFunctionException(
+        InvalidPlatformException invalidPlatformException) {
+      super(invalidPlatformException, Transience.PERSISTENT);
+    }
+
+    public BuildConfigurationKeyFunctionException(
+        BuildOptionsScopeFunctionException buildOptionsScopeFunctionException) {
+      super(buildOptionsScopeFunctionException, Transience.PERSISTENT);
     }
   }
 }

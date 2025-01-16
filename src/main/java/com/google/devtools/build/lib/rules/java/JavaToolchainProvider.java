@@ -13,7 +13,9 @@
 // limitations under the License.
 package com.google.devtools.build.lib.rules.java;
 
-import com.google.auto.value.AutoValue;
+import static com.google.devtools.build.lib.skyframe.BzlLoadValue.keyForBuild;
+import static java.util.Objects.requireNonNull;
+
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
@@ -27,10 +29,7 @@ import com.google.devtools.build.lib.analysis.RuleErrorConsumer;
 import com.google.devtools.build.lib.analysis.platform.ToolchainInfo;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.Depset;
-import com.google.devtools.build.lib.collect.nestedset.Depset.TypeException;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
-import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
-import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.packages.Info;
 import com.google.devtools.build.lib.packages.PackageSpecification.PackageGroupContents;
@@ -40,8 +39,8 @@ import com.google.devtools.build.lib.packages.StarlarkInfoWithSchema;
 import com.google.devtools.build.lib.packages.StarlarkProviderWrapper;
 import com.google.devtools.build.lib.packages.StructImpl;
 import com.google.devtools.build.lib.rules.java.JavaPluginInfo.JavaPluginData;
+import com.google.devtools.build.lib.skyframe.BzlLoadValue;
 import javax.annotation.Nullable;
-import net.starlark.java.eval.Dict;
 import net.starlark.java.eval.EvalException;
 import net.starlark.java.eval.Sequence;
 import net.starlark.java.eval.Starlark;
@@ -51,10 +50,27 @@ import net.starlark.java.eval.StarlarkValue;
 @Immutable
 public final class JavaToolchainProvider extends StarlarkInfoWrapper {
 
+  public static final StarlarkProviderWrapper<JavaToolchainProvider> RULES_JAVA_PROVIDER =
+      new RulesJavaProvider();
+  public static final StarlarkProviderWrapper<JavaToolchainProvider> WORKSPACE_PROVIDER =
+      new WorkspaceProvider();
   public static final StarlarkProviderWrapper<JavaToolchainProvider> PROVIDER = new Provider();
 
   private JavaToolchainProvider(StarlarkInfo underlying) {
     super(underlying);
+  }
+
+  public static JavaToolchainProvider wrap(Info info) throws RuleErrorException {
+    com.google.devtools.build.lib.packages.Provider.Key key = info.getProvider().getKey();
+    if (key.equals(PROVIDER.getKey())) {
+      return PROVIDER.wrap(info);
+    } else if (key.equals(RULES_JAVA_PROVIDER.getKey())) {
+      return RULES_JAVA_PROVIDER.wrap(info);
+    } else if (key.equals(WORKSPACE_PROVIDER.getKey())) {
+      return WORKSPACE_PROVIDER.wrap(info);
+    } else {
+      throw new RuleErrorException("expected JavaToolchainInfo, got: " + key);
+    }
   }
 
   @Override
@@ -100,7 +116,7 @@ public final class JavaToolchainProvider extends StarlarkInfoWrapper {
     if (toolchainInfo != null) {
       try {
         JavaToolchainProvider provider =
-            JavaToolchainProvider.PROVIDER.wrap(toolchainInfo.getValue("java", Info.class));
+            JavaToolchainProvider.wrap(toolchainInfo.getValue("java", Info.class));
         if (provider != null) {
           return provider;
         }
@@ -124,7 +140,7 @@ public final class JavaToolchainProvider extends StarlarkInfoWrapper {
 
   /** Returns the target Java bootclasspath. */
   public BootClassPathInfo getBootclasspath() throws RuleErrorException {
-    return BootClassPathInfo.PROVIDER.wrap(getUnderlyingValue("_bootclasspath_info", Info.class));
+    return BootClassPathInfo.wrap(getUnderlyingValue("_bootclasspath_info", Info.class));
   }
 
   /** Returns the {@link Artifact}s of compilation tools. */
@@ -186,41 +202,9 @@ public final class JavaToolchainProvider extends StarlarkInfoWrapper {
         .toSet();
   }
 
-  /**
-   * Returns {@code true} if header compilation should be forcibly disabled, overriding
-   * --java_header_compilation.
-   */
-  public boolean getForciblyDisableHeaderCompilation() throws RuleErrorException {
-    return getUnderlyingValue("_forcibly_disable_header_compilation", Boolean.class);
-  }
-
   /** Returns the {@link FilesToRunProvider} of the SingleJar tool. */
   public FilesToRunProvider getSingleJar() throws RuleErrorException {
     return getUnderlyingValue("single_jar", FilesToRunProvider.class);
-  }
-
-  /**
-   * Return the {@link FilesToRunProvider} of the tool that enforces one-version compliance of Java
-   * binaries.
-   */
-  @Nullable
-  public FilesToRunProvider getOneVersionBinary() throws RuleErrorException {
-    return getUnderlyingValue("_one_version_tool", FilesToRunProvider.class);
-  }
-
-  /** Return the {@link Artifact} of the allowlist used by the one-version compliance checker. */
-  @Nullable
-  public Artifact getOneVersionAllowlist() throws RuleErrorException {
-    return getUnderlyingValue("_one_version_allowlist", Artifact.class);
-  }
-
-  /**
-   * Return the {@link Artifact} of the one-version allowlist for tests used by the one-version
-   * compliance checker.
-   */
-  @Nullable
-  public Artifact oneVersionAllowlistForTests() throws RuleErrorException {
-    return getUnderlyingValue("_one_version_allowlist_for_tests", Artifact.class);
   }
 
   /** Returns the {@link Artifact} of the GenClass deploy jar */
@@ -241,44 +225,6 @@ public final class JavaToolchainProvider extends StarlarkInfoWrapper {
   /** Returns the ijar executable */
   public FilesToRunProvider getIjar() throws RuleErrorException {
     return getUnderlyingValue("ijar", FilesToRunProvider.class);
-  }
-
-  /** Returns the map of target environment-specific javacopts. */
-  private NestedSet<String> getCompatibleJavacOptions(String key) throws RuleErrorException {
-    try {
-      return Dict.noneableCast(
-              underlying.getValue("_compatible_javacopts"),
-              String.class,
-              Depset.class,
-              "_compatible_javacopts")
-          .getOrDefault(
-              key, Depset.of(String.class, NestedSetBuilder.emptySet(Order.NAIVE_LINK_ORDER)))
-          .getSet(String.class);
-    } catch (TypeException | EvalException e) {
-      throw new RuleErrorException(e);
-    }
-  }
-
-  public ImmutableList<String> getCompatibleJavacOptionsAsList(String key)
-      throws RuleErrorException {
-    return JavaHelper.tokenizeJavaOptions(getCompatibleJavacOptions(key));
-  }
-
-  private NestedSet<String> javacOptions() throws RuleErrorException {
-    return getUnderlyingNestedSet("_javacopts", String.class);
-  }
-
-  public ImmutableList<String> getJavacOptionsAsList(RuleContext ruleContext)
-      throws RuleErrorException {
-    ImmutableList.Builder<String> result =
-        ImmutableList.<String>builder().addAll(JavaHelper.tokenizeJavaOptions(javacOptions()));
-    if (ruleContext != null) {
-      // TODO(b/78512644): require ruleContext to be non-null after java_common.default_javac_opts
-      // is turned down
-      result.addAll(
-          ruleContext.getFragment(JavaConfiguration.class).getDefaultJavacFlagsForStarlarkAsList());
-    }
-    return result.build();
   }
 
   /**
@@ -304,6 +250,11 @@ public final class JavaToolchainProvider extends StarlarkInfoWrapper {
     return getUnderlyingValue("_javac_supports_worker_cancellation", Boolean.class);
   }
 
+  /** Returns whether JavaBuilders supports running multiplex persistent workers in sandbox mode */
+  public boolean getJavacSupportsWorkerMultiplexSandboxing() throws RuleErrorException {
+    return getUnderlyingValue("_javac_supports_worker_multiplex_sandboxing", Boolean.class);
+  }
+
   /** Returns the global {@code java_package_configuration} data. */
   public ImmutableList<JavaPackageConfigurationProvider> packageConfiguration()
       throws RuleErrorException {
@@ -315,24 +266,21 @@ public final class JavaToolchainProvider extends StarlarkInfoWrapper {
     return getUnderlyingValue("jacocorunner", FilesToRunProvider.class);
   }
 
-  public FilesToRunProvider getProguardAllowlister() throws RuleErrorException {
-    return getUnderlyingValue("proguard_allowlister", FilesToRunProvider.class);
-  }
-
   public JavaRuntimeInfo getJavaRuntime() throws RuleErrorException {
-    return JavaRuntimeInfo.PROVIDER.wrap(getUnderlyingValue("java_runtime", Info.class));
+    return JavaRuntimeInfo.wrap(getUnderlyingValue("java_runtime", Info.class));
   }
 
-  @AutoValue
-  abstract static class JspecifyInfo {
-
-    abstract JavaPluginData jspecifyProcessor();
-
-    abstract NestedSet<Artifact> jspecifyImplicitDeps();
-
-    abstract ImmutableList<String> jspecifyJavacopts();
-
-    abstract ImmutableList<PackageSpecificationProvider> jspecifyPackages();
+  record JspecifyInfo(
+      JavaPluginData jspecifyProcessor,
+      NestedSet<Artifact> jspecifyImplicitDeps,
+      ImmutableList<String> jspecifyJavacopts,
+      ImmutableList<PackageSpecificationProvider> jspecifyPackages) {
+    JspecifyInfo {
+      requireNonNull(jspecifyProcessor, "jspecifyProcessor");
+      requireNonNull(jspecifyImplicitDeps, "jspecifyImplicitDeps");
+      requireNonNull(jspecifyJavacopts, "jspecifyJavacopts");
+      requireNonNull(jspecifyPackages, "jspecifyPackages");
+    }
 
     boolean matches(Label label) {
       for (PackageSpecificationProvider provider : jspecifyPackages()) {
@@ -349,10 +297,9 @@ public final class JavaToolchainProvider extends StarlarkInfoWrapper {
     static JspecifyInfo fromStarlark(@Nullable StarlarkValue value) throws RuleErrorException {
       if (value == null || value == Starlark.NONE) {
         return null;
-      } else if (value instanceof StructImpl) {
-        StructImpl struct = (StructImpl) value;
+      } else if (value instanceof StructImpl struct) {
         try {
-          return new AutoValue_JavaToolchainProvider_JspecifyInfo(
+          return new JspecifyInfo(
               JavaPluginData.wrap(struct.getValue("processor")),
               Depset.noneableCast(
                   struct.getValue("implicit_deps"), Artifact.class, "implicit_deps"),
@@ -370,12 +317,31 @@ public final class JavaToolchainProvider extends StarlarkInfoWrapper {
     }
   }
 
-  private static class Provider extends StarlarkProviderWrapper<JavaToolchainProvider> {
+  private static class RulesJavaProvider extends Provider {
+    private RulesJavaProvider() {
+      super(keyForBuild(Label.parseCanonicalUnchecked("//java/common/rules:java_toolchain.bzl")));
+    }
+  }
 
-    private Provider() {
+  private static class WorkspaceProvider extends Provider {
+    private WorkspaceProvider() {
       super(
-          Label.parseCanonicalUnchecked("@_builtins//:common/java/java_toolchain.bzl"),
-          "JavaToolchainInfo");
+          keyForBuild(
+              Label.parseCanonicalUnchecked("@@rules_java//java/common/rules:java_toolchain.bzl")));
+    }
+  }
+
+  private static class Provider extends StarlarkProviderWrapper<JavaToolchainProvider> {
+    private Provider() {
+      this(
+          keyForBuild(
+              Label.parseCanonicalUnchecked(
+                  JavaSemantics.RULES_JAVA_PROVIDER_LABELS_PREFIX
+                      + "java/common/rules:java_toolchain.bzl")));
+    }
+
+    private Provider(BzlLoadValue.Key key) {
+      super(key, "JavaToolchainInfo");
     }
 
     @Override

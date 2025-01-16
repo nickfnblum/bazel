@@ -62,8 +62,18 @@ public class GraphlessQueryTest extends AbstractQueryTest<Target> {
   public void boundedRdepsWithError() throws Exception {
     writeFile(
         "foo/BUILD",
-        "sh_library(name = 'foo', deps = [':dep'])",
-        "sh_library(name = 'dep', deps = ['//bar:missing'])");
+        """
+        load('//test_defs:foo_library.bzl', 'foo_library')
+        foo_library(
+            name = "foo",
+            deps = [":dep"],
+        )
+
+        foo_library(
+            name = "dep",
+            deps = ["//bar:missing"],
+        )
+        """);
     assertThat(
             evalThrows("rdeps(//foo:foo, //foo:dep, 1)", /* unconditionallyThrows= */ false)
                 .getMessage())
@@ -98,7 +108,7 @@ public class GraphlessQueryTest extends AbstractQueryTest<Target> {
               TargetProvider targetProvider,
               CachingPackageLocator cachingPackageLocator,
               TargetPatternPreloader targetPatternPreloader,
-              TargetPattern.Parser mainRepoTargetParser,
+              TargetPattern.Parser targetParser,
               PathFragment relativeWorkingDirectory,
               boolean keepGoing,
               boolean strictScope,
@@ -110,7 +120,6 @@ public class GraphlessQueryTest extends AbstractQueryTest<Target> {
               Set<Setting> settings,
               Iterable<QueryFunction> extraFunctions,
               @Nullable PathPackageLocator packagePath,
-              boolean blockUniverseEvaluationErrors,
               boolean useGraphlessQuery,
               LabelPrinter labelPrinter) {
             return new GraphlessBlazeQueryEnvironment(
@@ -118,7 +127,7 @@ public class GraphlessQueryTest extends AbstractQueryTest<Target> {
                 targetProvider,
                 cachingPackageLocator,
                 targetPatternPreloader,
-                mainRepoTargetParser,
+                targetParser,
                 keepGoing,
                 strictScope,
                 loadingPhaseThreads,

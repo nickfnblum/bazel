@@ -23,12 +23,12 @@ import com.google.common.collect.Lists;
 import com.google.common.io.ByteSource;
 import com.google.common.io.CharStreams;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
+import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
-import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.FileAlreadyExistsException;
 import java.util.Collection;
@@ -39,6 +39,10 @@ import javax.annotation.Nullable;
 /** This interface models a file system. */
 @ThreadSafe
 public abstract class FileSystem {
+
+  // The maximum number of symbolic links that may be traversed by resolveSymbolicLinks() while
+  // canonicalizing a path before it gives up and throws a FileSymlinkLoopException.
+  public static final int MAX_SYMLINKS = 32;
 
   private final DigestHashFunction digestFunction;
 
@@ -195,7 +199,7 @@ public abstract class FileSystem {
       throw new IOException(path + " (Not a directory)");
     }
 
-    chmod(path, 0755);
+    chmod(path, 0777);
     return false;
   }
 
@@ -331,6 +335,7 @@ public abstract class FileSystem {
    * filesystem doesn't support them. This digest should be suitable for detecting changes to the
    * file.
    */
+  @Nullable
   protected byte[] getFastDigest(PathFragment path) throws IOException {
     return null;
   }
@@ -361,7 +366,7 @@ public abstract class FileSystem {
   /**
    * Appends a single regular path segment 'child' to 'dir', recursively resolving symbolic links in
    * 'child'. 'dir' must be canonical. 'maxLinks' is the maximum number of symbolic links that may
-   * be traversed before it gives up (the Linux kernel uses 32).
+   * be traversed before it gives up.
    *
    * <p>(This method does not need to be synchronized; but the result may be stale in the case of
    * concurrent modification.)
@@ -442,7 +447,8 @@ public abstract class FileSystem {
     return parentNode == null
         ? getPath(path) // (root)
         : getPath(
-            appendSegment(resolveSymbolicLinks(parentNode).asFragment(), path.getBaseName(), 32));
+            appendSegment(
+                resolveSymbolicLinks(parentNode).asFragment(), path.getBaseName(), MAX_SYMLINKS));
   }
 
   /**
@@ -612,7 +618,7 @@ public abstract class FileSystem {
    */
   protected abstract Collection<String> getDirectoryEntries(PathFragment path) throws IOException;
 
-  protected static Dirent.Type direntFromStat(FileStatus stat) {
+  protected static Dirent.Type direntFromStat(@Nullable FileStatus stat) {
     if (stat == null) {
       return Dirent.Type.UNKNOWN;
     } else if (stat.isSpecialFile()) {
@@ -723,25 +729,15 @@ public abstract class FileSystem {
   /**
    * Creates an InputStream accessing the file denoted by the path.
    *
+   * @throws FileNotFoundException if the file does not exist
    * @throws IOException if there was an error opening the file for reading
    */
   protected abstract InputStream getInputStream(PathFragment path) throws IOException;
 
   /**
-   * Creates a ReadableFileChannel accessing the file denoted by the path.
-   *
-   * @throws IOException if there was an error opening the file for reading
-   */
-  protected ReadableByteChannel createReadableByteChannel(PathFragment path) throws IOException {
-    throw new UnsupportedOperationException();
-  }
-
-  /**
    * Returns a {@link SeekableByteChannel} for writing to a file at provided path.
    *
    * <p>Truncates the target file, therefore it cannot be used to read already existing files.
-   * Please use {@link #createReadableByteChannel} to get a {@linkplain ReadableByteChannel channel}
-   * for reads instead.
    */
   protected abstract SeekableByteChannel createReadWriteByteChannel(PathFragment path)
       throws IOException;
@@ -779,6 +775,8 @@ public abstract class FileSystem {
   /**
    * Renames the file denoted by "sourceNode" to the location "targetNode". See {@link
    * Path#renameTo} for specification.
+   *
+   * <p>Implementations must be atomic.
    */
   public abstract void renameTo(PathFragment sourcePath, PathFragment targetPath)
       throws IOException;
@@ -827,4 +825,21 @@ public abstract class FileSystem {
    */
   protected void prefetchPackageAsync(PathFragment path, int maxDirs) {}
 
+  /**
+   * Returns a {@link File} object for the given path. This method is only supported by file system
+   * implementations that are backed by the local file system.
+   */
+  protected File getIoFile(PathFragment path) {
+    throw new UnsupportedOperationException(
+        "getIoFile() not supported for " + getClass().getName());
+  }
+
+  /**
+   * Returns a {@link java.nio.file.Path} object for the given path. This method is only supported
+   * by file system implementations that are backed by the local file system.
+   */
+  protected java.nio.file.Path getNioPath(PathFragment path) {
+    throw new UnsupportedOperationException(
+        "getNioPath() not supported for " + getClass().getName());
+  }
 }

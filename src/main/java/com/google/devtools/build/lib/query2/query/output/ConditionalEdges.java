@@ -123,6 +123,13 @@ public class ConditionalEdges {
         // skip non configurable attributes
         continue;
       }
+      if (rule.getAttr(attr.getName()) instanceof Attribute.ComputedDefault) {
+        // isConfigurable above checks that the attribute is either a `select()` or a computed
+        // default. We don't currently handle the latter so skip it.
+        // TODO: b/375344172 - (bazel-team) Decide how to resolve computed defaults.
+        // TODO: b/375344172 - (bazel-team) Add a regression test for this case.
+        continue;
+      }
 
       for (BuildType.Selector<?> selector :
           ((BuildType.SelectorList<?>) attributeMap.getRawAttributeValue(rule, attr))
@@ -133,15 +140,14 @@ public class ConditionalEdges {
         }
         selector.forEach(
             (key, value) -> {
-              if (value instanceof List<?>) {
-                List<?> deps = (List<?>) value;
+              if (value instanceof List<?> deps) {
                 for (Object dep : deps) {
-                  if (dep instanceof Label) {
-                    conditions.put((Label) dep, key);
+                  if (dep instanceof Label label) {
+                    conditions.put(label, key);
                   }
                 }
-              } else if (value instanceof Label) {
-                conditions.put((Label) value, key);
+              } else if (value instanceof Label label) {
+                conditions.put(label, key);
               }
             });
       }

@@ -13,7 +13,8 @@
 // limitations under the License.
 package com.google.devtools.build.lib.bazel.bzlmod.modcommand;
 
-import com.google.auto.value.AutoValue;
+import static java.util.Objects.requireNonNull;
+
 import com.google.common.collect.ImmutableBiMap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -27,6 +28,7 @@ import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.Label.RepoContext;
 import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
 import com.google.devtools.build.lib.cmdline.RepositoryMapping;
+import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.server.FailureDetails.ModCommand.Code;
 import com.google.devtools.common.options.Converter;
 import com.google.devtools.common.options.Converters.CommaSeparatedNonEmptyOptionListConverter;
@@ -39,23 +41,23 @@ import java.util.Optional;
  * {@link ModuleArg}. Valid examples include {@code @rules_java//java:extensions.bzl%toolchains},
  * {@code rules_java@6.1.1//java:extensions.bzl%toolchains}, etc.
  */
-@AutoValue
-public abstract class ExtensionArg {
-  public static ExtensionArg create(
-      ModuleArg moduleArg, String repoRelativeBzlLabel, String extensionName) {
-    return new AutoValue_ExtensionArg(moduleArg, repoRelativeBzlLabel, extensionName);
+public record ExtensionArg(ModuleArg moduleArg, String repoRelativeBzlLabel, String extensionName) {
+  public ExtensionArg {
+    requireNonNull(moduleArg, "moduleArg");
+    requireNonNull(repoRelativeBzlLabel, "repoRelativeBzlLabel");
+    requireNonNull(extensionName, "extensionName");
   }
 
-  public abstract ModuleArg moduleArg();
-
-  public abstract String repoRelativeBzlLabel();
-
-  public abstract String extensionName();
+  public static ExtensionArg create(
+      ModuleArg moduleArg, String repoRelativeBzlLabel, String extensionName) {
+    return new ExtensionArg(moduleArg, repoRelativeBzlLabel, extensionName);
+  }
 
   /** Resolves this {@link ExtensionArg} to a {@link ModuleExtensionId}. */
   public final ModuleExtensionId resolveToExtensionId(
       ImmutableMap<String, ImmutableSet<ModuleKey>> modulesIndex,
       ImmutableMap<ModuleKey, AugmentedModule> depGraph,
+      ImmutableMap<ModuleKey, RepositoryName> moduleKeyToCanonicalNames,
       ImmutableBiMap<String, ModuleKey> baseModuleDeps,
       ImmutableBiMap<String, ModuleKey> baseModuleUnusedDeps)
       throws InvalidArgumentException {
@@ -64,6 +66,7 @@ public abstract class ExtensionArg {
             .resolveToModuleKeys(
                 modulesIndex,
                 depGraph,
+                moduleKeyToCanonicalNames,
                 baseModuleDeps,
                 baseModuleUnusedDeps,
                 /* includeUnused= */ false,
@@ -82,9 +85,9 @@ public abstract class ExtensionArg {
           Label.parseWithRepoContext(
               repoRelativeBzlLabel(),
               RepoContext.of(
-                  key.getCanonicalRepoName(),
+                  moduleKeyToCanonicalNames.get(key),
                   // Intentionally allow no repo mapping here: it's a repo-relative label!
-                  RepositoryMapping.create(ImmutableMap.of(), key.getCanonicalRepoName())));
+                  RepositoryMapping.create(ImmutableMap.of(), moduleKeyToCanonicalNames.get(key))));
       // TODO(wyv): support isolated extension usages?
       return ModuleExtensionId.create(label, extensionName(), Optional.empty());
     } catch (LabelSyntaxException e) {

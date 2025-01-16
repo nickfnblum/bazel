@@ -15,6 +15,7 @@ package com.google.devtools.build.lib.buildtool;
 
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.flogger.GoogleLogger;
@@ -34,10 +35,8 @@ import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 
@@ -91,11 +90,8 @@ public final class OutputDirectoryLinksUtils {
    *
    * <p>A warning is emitted if a symlink would resolve to multiple destinations, or if a filesystem
    * mutation operation fails.
-   *
-   * @return a list of {@link ConvenienceSymlink} messages describing what was created and
-   *     destroyed.
    */
-  static ImmutableList<ConvenienceSymlink> createOutputDirectoryLinks(
+  static SymlinkCreationResult createOutputDirectoryLinks(
       Iterable<SymlinkDefinition> symlinkDefinitions,
       BuildRequestOptions buildRequestOptions,
       String workspaceName,
@@ -107,14 +103,15 @@ public final class OutputDirectoryLinksUtils {
       String productName) {
     Path execRoot = directories.getExecRoot(workspaceName);
     Path outputPath = directories.getOutputPath(workspaceName);
-    Path outputBase = directories.getOutputBase();
     String symlinkPrefix = buildRequestOptions.getSymlinkPrefix(productName);
     ConvenienceSymlinksMode mode = buildRequestOptions.experimentalConvenienceSymlinks;
     if (NO_CREATE_SYMLINKS_PREFIX.equals(symlinkPrefix)) {
-      return ImmutableList.of();
+      return EMPTY_SYMLINK_CREATION_RESULT;
     }
 
     ImmutableList.Builder<ConvenienceSymlink> convenienceSymlinksBuilder = ImmutableList.builder();
+    ImmutableMap.Builder<PathFragment, PathFragment> createdConvenienceSymlinksBuilder =
+        ImmutableMap.builder();
     List<String> failures = new ArrayList<>();
     List<String> ambiguousLinks = new ArrayList<>();
     Set<String> createdLinks = new LinkedHashSet<>();
@@ -143,10 +140,12 @@ public final class OutputDirectoryLinksUtils {
           createLink(
               workspace,
               linkName,
-              outputBase,
+              execRoot,
+              directories,
               Iterables.getOnlyElement(candidatePaths),
               failures,
               convenienceSymlinksBuilder,
+              createdConvenienceSymlinksBuilder,
               logOnly);
         } else {
           removeLink(workspace, linkName, failures, convenienceSymlinksBuilder, logOnly);
@@ -174,7 +173,8 @@ public final class OutputDirectoryLinksUtils {
                       + "distinct configurations",
                   Joiner.on(", ").join(ambiguousLinks))));
     }
-    return convenienceSymlinksBuilder.build();
+    return new SymlinkCreationResult(
+        convenienceSymlinksBuilder.build(), createdConvenienceSymlinksBuilder.buildKeepingLast());
   }
 
   /**
@@ -185,11 +185,8 @@ public final class OutputDirectoryLinksUtils {
    *
    * @param symlinkDefinitions extra symlink types added by the {@link ConfiguredRuleClassProvider}
    * @param workspace the runtime's workspace
-   * @param outputBase the runtime's output directory. Only used with
-   *     remove_all_convenience_symlinks.
    * @param eventHandler the error eventHandler
    * @param symlinkPrefix the symlink prefix which should be removed
-   * @param productName the product name
    */
   public static void removeOutputDirectoryLinks(
       Iterable<SymlinkDefinition> symlinkDefinitions,
@@ -227,7 +224,8 @@ public final class OutputDirectoryLinksUtils {
    * as needed; it points to {@code target}. Any filesystem errors are appended to {@code failures}.
    *
    * <p>A {@code ConvenienceSymlink} entry is added to {@code symlinksBuilder} describing the
-   * symlink. {@code outputBase} is used to determine the relative target path for this entry.
+   * symlink. {@code execRoot} and {@code directories} are used to determine the relative target
+   * path for this entry.
    *
    * <p>If {@code logOnly} is true, the {@code ConvenienceSymlink} entry is added but no actual
    * filesystem operations are performed.
@@ -235,25 +233,32 @@ public final class OutputDirectoryLinksUtils {
   private static void createLink(
       Path base,
       String name,
-      Path outputBase,
+      Path execRoot,
+      BlazeDirectories directories,
       Path target,
       List<String> failures,
       ImmutableList.Builder<ConvenienceSymlink> symlinksBuilder,
+      ImmutableMap.Builder<PathFragment, PathFragment> createdSymlinksBuilder,
       boolean logOnly) {
-    // Usually the symlink target falls under the output base, and the path in the BEP event should
-    // be relative to that output base. In rare cases where the symlink points elsewhere, use the
-    // absolute path as a fallback.
-    String targetForEvent =
+    // The BEP event needs to report a target path relative to the output base. Usually the target
+    // is already under the output base, but if the execroot is virtual (only happens in internal
+    // blaze, see ModuleFileSystem), we need to rewrite the path using the real execroot.
+    Path outputBase = directories.getOutputBase();
+    Path targetForEvent =
         target.startsWith(outputBase)
-            ? target.relativeTo(outputBase).getPathString()
-            : target.getPathString();
+            ? target
+            : directories.getBlazeExecRoot().getRelative(target.relativeTo(execRoot));
     symlinksBuilder.add(
         ConvenienceSymlink.newBuilder()
             .setPath(name)
-            .setTarget(targetForEvent)
+            .setTarget(targetForEvent.relativeTo(outputBase).getPathString())
             .setAction(Action.CREATE)
             .build());
+
+    PathFragment nameFragment = PathFragment.create(name);
     if (logOnly) {
+      // Still report as created - log-only implies we want to pretend it exists.
+      createdSymlinksBuilder.put(nameFragment, target.asFragment());
       return;
     }
     Path link = base.getRelative(name);
@@ -266,6 +271,7 @@ public final class OutputDirectoryLinksUtils {
     }
     try {
       FileSystemUtils.ensureSymbolicLink(link, target);
+      createdSymlinksBuilder.put(nameFragment, target.asFragment());
     } catch (IOException e) {
       failures.add(String.format("cannot create symbolic link %s -> %s:  %s",
           name, target.getPathString(), e.getMessage()));
@@ -372,41 +378,32 @@ public final class OutputDirectoryLinksUtils {
             }
           });
 
-  public static PathPrettyPrinter getPathPrettyPrinter(
-      Iterable<SymlinkDefinition> symlinkDefinitions,
-      String symlinkPrefix,
-      Path workspaceDirectory) {
-    return new PathPrettyPrinter(
-        symlinkPrefix,
-        resolve(getAllLinkDefinitions(symlinkDefinitions), workspaceDirectory, symlinkPrefix));
-  }
+  static final SymlinkCreationResult EMPTY_SYMLINK_CREATION_RESULT =
+      new SymlinkCreationResult(ImmutableList.of(), ImmutableMap.of());
 
-  /**
-   * Creates a path pretty printer, immediately resolving the symlink definitions by reading the
-   * current symlinks _from disk_.
-   */
-  private static Map<PathFragment, PathFragment> resolve(
-      ImmutableList<SymlinkDefinition> symlinkDefinitions,
-      Path workspaceDirectory,
-      String symlinkPrefix) {
-    Map<PathFragment, PathFragment> result = new LinkedHashMap<>();
-    String workspaceBaseName = workspaceDirectory.getBaseName();
-    for (SymlinkDefinition link : symlinkDefinitions) {
-      String linkName = link.getLinkName(symlinkPrefix, workspaceBaseName);
-      PathFragment linkFragment = PathFragment.create(linkName);
-      Path dir = workspaceDirectory.getRelative(linkFragment);
-      try {
-        PathFragment levelOneLinkTarget = dir.readSymbolicLink();
-        if (levelOneLinkTarget.isAbsolute()) {
-          result.put(linkFragment, dir.getRelative(levelOneLinkTarget).asFragment());
-        }
-      } catch (IOException ignored) {
-        // We don't guarantee that the convenience symlinks exist - e.g., we might be running in a
-        // readonly directory. We silently fall back to printing the full path in that case. As an
-        // alternative, we could capture that information when we create the symlinks and pass that
-        // here instead of reading files back from local disk.
-      }
+  /** Describes the outcome of symlink creation. */
+  static class SymlinkCreationResult {
+    private final ImmutableList<ConvenienceSymlink> convenienceSymlinkProtos;
+    private final ImmutableMap<PathFragment, PathFragment> createdSymlinks;
+
+    private SymlinkCreationResult(
+        ImmutableList<ConvenienceSymlink> convenienceSymlinkProtos,
+        ImmutableMap<PathFragment, PathFragment> createdSymlinks) {
+      this.convenienceSymlinkProtos = convenienceSymlinkProtos;
+      this.createdSymlinks = createdSymlinks;
     }
-    return result;
+
+    /** Returns descriptions of what symlinks were created and destroyed. */
+    ImmutableList<ConvenienceSymlink> getConvenienceSymlinkProtos() {
+      return convenienceSymlinkProtos;
+    }
+
+    /**
+     * Returns symlink name -> target mappings of symlinks that were actually created (or in the
+     * case of {@link ConvenienceSymlinksMode#LOG_ONLY}, would have been created).
+     */
+    ImmutableMap<PathFragment, PathFragment> getCreatedSymlinks() {
+      return createdSymlinks;
+    }
   }
 }

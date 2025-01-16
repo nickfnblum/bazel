@@ -14,27 +14,30 @@
 package com.google.devtools.build.lib.skyframe;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static com.google.devtools.build.lib.analysis.AspectResolutionHelpers.aspectMatchesConfiguredTarget;
-import static com.google.devtools.build.lib.skyframe.DependencyResolver.createDefaultToolchainContextKey;
 import static com.google.devtools.build.lib.skyframe.DependencyResolver.getPrioritizedDetailedExitCode;
+import static com.google.devtools.build.lib.skyframe.SkyValueRetrieverUtils.maybeFetchSkyValueRemotely;
+import static com.google.devtools.build.lib.skyframe.serialization.SkyValueRetriever.INITIAL_STATE;
 
 import com.google.common.base.Preconditions;
+import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
+import com.google.devtools.build.lib.actions.ActionConflictException;
 import com.google.devtools.build.lib.actions.ActionLookupKey;
-import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.analysis.AliasProvider;
+import com.google.devtools.build.lib.analysis.AspectBaseTargetResolvedToolchainContext;
 import com.google.devtools.build.lib.analysis.AspectValue;
 import com.google.devtools.build.lib.analysis.CachingAnalysisEnvironment;
 import com.google.devtools.build.lib.analysis.CachingAnalysisEnvironment.MissingDepException;
 import com.google.devtools.build.lib.analysis.ConfiguredAspect;
+import com.google.devtools.build.lib.analysis.ConfiguredAspect.NonApplicableAspect;
 import com.google.devtools.build.lib.analysis.ConfiguredAspectFactory;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.ConfiguredTargetValue;
 import com.google.devtools.build.lib.analysis.DependencyKind;
-import com.google.devtools.build.lib.analysis.DuplicateException;
 import com.google.devtools.build.lib.analysis.ExecGroupCollection;
 import com.google.devtools.build.lib.analysis.ExecGroupCollection.InvalidExecGroupException;
 import com.google.devtools.build.lib.analysis.IncompatiblePlatformProvider;
@@ -49,9 +52,12 @@ import com.google.devtools.build.lib.analysis.config.DependencyEvaluationExcepti
 import com.google.devtools.build.lib.analysis.config.StarlarkExecTransitionLoader;
 import com.google.devtools.build.lib.analysis.config.StarlarkExecTransitionLoader.StarlarkExecTransitionLoadingException;
 import com.google.devtools.build.lib.analysis.configuredtargets.MergedConfiguredTarget;
+import com.google.devtools.build.lib.analysis.configuredtargets.MergedConfiguredTarget.MergingException;
+import com.google.devtools.build.lib.analysis.platform.ToolchainTypeInfo;
 import com.google.devtools.build.lib.analysis.producers.DependencyContext;
 import com.google.devtools.build.lib.analysis.producers.DependencyContextProducer;
 import com.google.devtools.build.lib.analysis.producers.UnloadedToolchainContextsInputs;
+import com.google.devtools.build.lib.analysis.producers.UnloadedToolchainContextsProducer;
 import com.google.devtools.build.lib.analysis.starlark.StarlarkAttributeTransitionProvider;
 import com.google.devtools.build.lib.bugreport.BugReport;
 import com.google.devtools.build.lib.causes.Cause;
@@ -73,31 +79,36 @@ import com.google.devtools.build.lib.packages.OutputFile;
 import com.google.devtools.build.lib.packages.Package;
 import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
+import com.google.devtools.build.lib.packages.RuleClassProvider;
 import com.google.devtools.build.lib.packages.StarlarkAspectClass;
 import com.google.devtools.build.lib.packages.StarlarkDefinedAspect;
 import com.google.devtools.build.lib.packages.Target;
-import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
 import com.google.devtools.build.lib.profiler.memory.CurrentRuleTracker;
 import com.google.devtools.build.lib.skyframe.AspectKeyCreator.AspectKey;
 import com.google.devtools.build.lib.skyframe.SkyframeExecutor.BuildViewProvider;
 import com.google.devtools.build.lib.skyframe.config.BuildConfigurationKey;
+import com.google.devtools.build.lib.skyframe.serialization.SkyValueRetriever;
+import com.google.devtools.build.lib.skyframe.serialization.SkyValueRetriever.SerializableSkyKeyComputeState;
+import com.google.devtools.build.lib.skyframe.serialization.SkyValueRetriever.SerializationState;
+import com.google.devtools.build.lib.skyframe.serialization.analysis.RemoteAnalysisCachingDependenciesProvider;
+import com.google.devtools.build.lib.skyframe.toolchains.ToolchainContextUtil;
 import com.google.devtools.build.lib.skyframe.toolchains.ToolchainException;
 import com.google.devtools.build.lib.skyframe.toolchains.UnloadedToolchainContext;
 import com.google.devtools.build.lib.util.OrderedSetMultimap;
+import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.skyframe.SkyFunction;
-import com.google.devtools.build.skyframe.SkyFunction.Environment.SkyKeyComputeState;
 import com.google.devtools.build.skyframe.SkyFunctionException;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import com.google.devtools.build.skyframe.SkyframeLookupResult;
 import com.google.devtools.build.skyframe.state.Driver;
+import com.google.devtools.build.skyframe.state.StateMachine;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import javax.annotation.Nullable;
-import net.starlark.java.eval.StarlarkSemantics;
 
 /**
  * The Skyframe function that generates aspects.
@@ -118,6 +129,8 @@ import net.starlark.java.eval.StarlarkSemantics;
  */
 final class AspectFunction implements SkyFunction {
   private final BuildViewProvider buildViewProvider;
+  private final RuleClassProvider ruleClassProvider;
+
   /**
    * Indicates whether the set of packages transitively loaded for a given {@link AspectValue} will
    * be needed later (see {@link
@@ -152,26 +165,80 @@ final class AspectFunction implements SkyFunction {
    */
   private final BaseTargetPrerequisitesSupplier baseTargetPrerequisitesSupplier;
 
+  private final Supplier<RemoteAnalysisCachingDependenciesProvider> cachingDependenciesSupplier;
+  private final AnalysisProgressReceiver analysisProgressReceiver;
+
   AspectFunction(
       BuildViewProvider buildViewProvider,
+      RuleClassProvider ruleClassProvider,
       boolean storeTransitivePackages,
       PrerequisitePackageFunction prerequisitePackages,
-      BaseTargetPrerequisitesSupplier baseTargetPrerequisitesSupplier) {
+      BaseTargetPrerequisitesSupplier baseTargetPrerequisitesSupplier,
+      Supplier<RemoteAnalysisCachingDependenciesProvider> cachingDependenciesSupplier,
+      AnalysisProgressReceiver analysisProgressReceiver) {
     this.buildViewProvider = buildViewProvider;
+    this.ruleClassProvider = ruleClassProvider;
     this.storeTransitivePackages = storeTransitivePackages;
     this.prerequisitePackages = prerequisitePackages;
     this.baseTargetPrerequisitesSupplier = baseTargetPrerequisitesSupplier;
+    this.cachingDependenciesSupplier = cachingDependenciesSupplier;
+    this.analysisProgressReceiver = analysisProgressReceiver;
   }
 
-  static class State implements SkyKeyComputeState {
+  static class State
+      implements SerializableSkyKeyComputeState, UnloadedToolchainContextsProducer.ResultSink {
     @Nullable InitialValues initialValues;
 
     final DependencyResolver.State computeDependenciesState;
+
+    /**
+     * Computes the {@link UnloadedToolchainContext} collection for the underlying target of the
+     * aspect.
+     *
+     * <p>One of {@link #baseTargetUnloadedToolchainContexts}, {@link
+     * #baseTargetUnloadedToolchainContextsError} or {@link #baseTargetHasNoToolchains} will be set
+     * upon completion.
+     */
+    @Nullable // Non-null when in-flight.
+    Driver baseTargetUnloadedToolchainContextsProducer;
+
+    @Nullable ToolchainCollection<UnloadedToolchainContext> baseTargetUnloadedToolchainContexts;
+
+    @Nullable ToolchainException baseTargetUnloadedToolchainContextsError;
+
+    // Will be true if the target doesn't require toolchain resolution.
+    boolean baseTargetHasNoToolchains;
+
+    private SerializationState serializationState = INITIAL_STATE;
 
     private State(
         boolean storeTransitivePackages, PrerequisitePackageFunction prerequisitePackages) {
       this.computeDependenciesState =
           new DependencyResolver.State(storeTransitivePackages, prerequisitePackages);
+    }
+
+    @Override
+    public void acceptUnloadedToolchainContexts(
+        @Nullable ToolchainCollection<UnloadedToolchainContext> value) {
+      this.baseTargetUnloadedToolchainContexts = value;
+      if (this.baseTargetUnloadedToolchainContexts == null) {
+        this.baseTargetHasNoToolchains = true;
+      }
+    }
+
+    @Override
+    public void acceptUnloadedToolchainContextsError(ToolchainException error) {
+      this.baseTargetUnloadedToolchainContextsError = error;
+    }
+
+    @Override
+    public SerializationState getSerializationState() {
+      return serializationState;
+    }
+
+    @Override
+    public void setSerializationState(SerializationState state) {
+      this.serializationState = state;
     }
   }
 
@@ -195,8 +262,21 @@ final class AspectFunction implements SkyFunction {
   public SkyValue compute(SkyKey skyKey, Environment env)
       throws AspectFunctionException, InterruptedException {
     AspectKey key = (AspectKey) skyKey.argument();
-    State state = env.getState(() -> new State(storeTransitivePackages, prerequisitePackages));
+    java.util.function.Supplier<State> stateSupplier =
+        () -> new State(storeTransitivePackages, prerequisitePackages);
 
+    switch (maybeFetchSkyValueRemotely(
+        key, env, cachingDependenciesSupplier.get(), stateSupplier)) {
+      case SkyValueRetriever.Restart unused:
+        return null;
+      case SkyValueRetriever.RetrievedValue v:
+        analysisProgressReceiver.doneDownloadedConfiguredAspect();
+        return v.value();
+      case SkyValueRetriever.NoCachedData unused:
+        break;
+    }
+
+    State state = env.getState(stateSupplier);
     DependencyResolver.State computeDependenciesState = state.computeDependenciesState;
     if (state.initialValues == null) {
       InitialValues initialValues = getInitialValues(computeDependenciesState, key, env);
@@ -224,7 +304,7 @@ final class AspectFunction implements SkyFunction {
       return AspectValue.create(
           key,
           aspect,
-          ConfiguredAspect.forNonapplicableTarget(),
+          ConfiguredAspect.NonApplicableAspect.INSTANCE,
           computeDependenciesState.transitivePackages());
     }
 
@@ -245,29 +325,14 @@ final class AspectFunction implements SkyFunction {
         associatedTarget.getOriginalLabel(),
         associatedTarget.getLabel());
 
-    // If the incompatible flag is set, the top-level aspect should not be applied on top-level
-    // targets whose rules do not advertise the aspect's required providers. The aspect should not
-    // also propagate to these targets dependencies.
-    StarlarkSemantics starlarkSemantics = PrecomputedValue.STARLARK_SEMANTICS.get(env);
-    if (starlarkSemantics == null) {
-      return null;
-    }
-    boolean checkRuleAdvertisedProviders =
-        starlarkSemantics.getBool(
-            BuildLanguageOptions.INCOMPATIBLE_TOP_LEVEL_ASPECTS_REQUIRE_PROVIDERS);
-    if (checkRuleAdvertisedProviders) {
-      if (target instanceof Rule) {
-        if (!aspect
-            .getDefinition()
-            .getRequiredProviders()
-            .isSatisfiedBy(((Rule) target).getRuleClassObject().getAdvertisedProviders())) {
-          return AspectValue.create(
-              key,
-              aspect,
-              ConfiguredAspect.forNonapplicableTarget(),
-              computeDependenciesState.transitivePackages());
-        }
-      }
+    if (associatedTarget.getConfigurationKey() == null || !targetSatisfiesAspect(target, aspect)) {
+      // Aspects cannot apply to PackageGroups or InputFiles, the only cases where configuration key
+      // is null. They also cannot apply to targets that don't satisfy the aspect's requirements.
+      return AspectValue.create(
+          key,
+          aspect,
+          ConfiguredAspect.NonApplicableAspect.INSTANCE,
+          computeDependenciesState.transitivePackages());
     }
 
     ImmutableList<Aspect> topologicalAspectPath;
@@ -297,7 +362,7 @@ final class AspectFunction implements SkyFunction {
           Lists.transform(key.getBaseKeys(), k -> ((AspectValue) aspectValues.get(k)));
       try {
         associatedTarget = MergedConfiguredTarget.of(associatedTarget, directlyRequiredAspects);
-      } catch (DuplicateException e) {
+      } catch (MergingException e) {
         env.getListener().handle(Event.error(target.getLocation(), e.getMessage()));
         throw new AspectFunctionException(
             new AspectCreationException(e.getMessage(), target.getLabel(), configuration));
@@ -308,6 +373,18 @@ final class AspectFunction implements SkyFunction {
       var dependencyContext = getDependencyContext(computeDependenciesState, key, aspect, env);
       if (dependencyContext == null) {
         return null;
+      }
+
+      ToolchainCollection<UnloadedToolchainContext> baseTargetUnloadedToolchainContexts = null;
+      if (target.isRule()) {
+        Pair<ToolchainCollection<UnloadedToolchainContext>, Boolean> contextOrRestart =
+            getBaseTargetUnloadedToolchainContexts(
+                state, targetAndConfiguration, key.getBaseConfiguredTargetKey(), env);
+        if (contextOrRestart.second) {
+          return null; // Need Skyframe deps.
+        } else {
+          baseTargetUnloadedToolchainContexts = contextOrRestart.first;
+        }
       }
 
       Optional<StarlarkAttributeTransitionProvider> starlarkExecTransition;
@@ -335,7 +412,8 @@ final class AspectFunction implements SkyFunction {
               starlarkExecTransition.orElse(null),
               env,
               env.getListener(),
-              baseTargetPrerequisitesSupplier);
+              baseTargetPrerequisitesSupplier,
+              baseTargetUnloadedToolchainContexts);
       if (!computeDependenciesState.transitiveRootCauses().isEmpty()) {
         NestedSet<Cause> causes = computeDependenciesState.transitiveRootCauses().build();
         throw new AspectFunctionException(
@@ -356,7 +434,7 @@ final class AspectFunction implements SkyFunction {
         ToolchainCollection.Builder<ResolvedToolchainContext> contextsBuilder =
             ToolchainCollection.builder();
         for (Map.Entry<String, UnloadedToolchainContext> unloadedContext :
-            unloadedToolchainContexts.getContextMap().entrySet()) {
+            unloadedToolchainContexts.contextMap().entrySet()) {
           ImmutableSet<ConfiguredTargetAndData> toolchainDependencies =
               ImmutableSet.copyOf(
                   depValueMap.get(DependencyKind.forExecGroup(unloadedContext.getKey())));
@@ -367,7 +445,20 @@ final class AspectFunction implements SkyFunction {
         }
         toolchainContexts = contextsBuilder.build();
       }
-
+      ToolchainCollection<AspectBaseTargetResolvedToolchainContext> baseTargetToolchainContexts;
+      try {
+        baseTargetToolchainContexts =
+            getBaseTargetToolchainContexts(
+                baseTargetUnloadedToolchainContexts,
+                aspect,
+                target,
+                topologicalAspectPath,
+                depValueMap);
+      } catch (MergingException e) {
+        env.getListener().handle(Event.error(target.getLocation(), e.getMessage()));
+        throw new AspectFunctionException(
+            new AspectCreationException(e.getMessage(), target.getLabel(), configuration));
+      }
       return createAspect(
           env,
           key,
@@ -379,6 +470,7 @@ final class AspectFunction implements SkyFunction {
           configuration,
           dependencyContext.configConditions(),
           toolchainContexts,
+          baseTargetToolchainContexts,
           computeDependenciesState.execGroupCollectionBuilder,
           depValueMap,
           computeDependenciesState.transitiveState,
@@ -390,8 +482,7 @@ final class AspectFunction implements SkyFunction {
       if (!e.depReportedOwnError()) {
         env.getListener().handle(Event.error(e.getLocation(), e.getMessage()));
       }
-      if (e.getCause() instanceof ConfiguredValueCreationException) {
-        ConfiguredValueCreationException cause = (ConfiguredValueCreationException) e.getCause();
+      if (e.getCause() instanceof ConfiguredValueCreationException cause) {
         throw new AspectFunctionException(
             new AspectCreationException(
                 cause.getMessage(), cause.getRootCauses(), cause.getDetailedExitCode()));
@@ -411,6 +502,132 @@ final class AspectFunction implements SkyFunction {
           new AspectCreationException(
               e.getMessage(), new LabelCause(key.getLabel(), e.getDetailedExitCode())));
     }
+  }
+
+  /**
+   * Returns the {@link ToolchainCollection} of {@link AspectBaseTargetResolvedToolchainContext}s
+   * for the base target.
+   */
+  @Nullable
+  private static ToolchainCollection<AspectBaseTargetResolvedToolchainContext>
+      getBaseTargetToolchainContexts(
+          ToolchainCollection<UnloadedToolchainContext> baseTargetUnloadedToolchainContexts,
+          Aspect aspect,
+          Target target,
+          ImmutableList<Aspect> aspectsPath,
+          OrderedSetMultimap<DependencyKind, ConfiguredTargetAndData> depValueMap)
+          throws MergingException {
+    if (baseTargetUnloadedToolchainContexts == null
+        || !canAspectsPropagateToToolchains(aspectsPath, target)) {
+      return null;
+    }
+    String description =
+        "aspect " + aspect.getDescriptor().getDescription() + " applied to " + target;
+
+    ToolchainCollection.Builder<AspectBaseTargetResolvedToolchainContext> targetContextsBuilder =
+        ToolchainCollection.builder();
+
+    for (Map.Entry<String, UnloadedToolchainContext> unloadedContext :
+        baseTargetUnloadedToolchainContexts.contextMap().entrySet()) {
+      // For each requested toolchain type, collect the targets of its resolved toolchains. If
+      // multiple types are resolved to the same toolchain, the `ConfiguredTargetAndData`
+      // of the toolchain can be different for each of them depending on the aspects
+      // propagating to each toolchain type.
+      ImmutableMultimap.Builder<ToolchainTypeInfo, ConfiguredTargetAndData> toolchainsDeps =
+          ImmutableMultimap.builder();
+
+      for (var toolchainTypeInfo : unloadedContext.getValue().toolchainTypeToResolved().keySet()) {
+        toolchainsDeps.putAll(
+            toolchainTypeInfo,
+            ImmutableSet.copyOf(
+                depValueMap.get(
+                    DependencyKind.forBaseTargetExecGroup(
+                        unloadedContext.getKey(), toolchainTypeInfo.typeLabel()))));
+      }
+
+      targetContextsBuilder.addContext(
+          unloadedContext.getKey(),
+          AspectBaseTargetResolvedToolchainContext.load(
+              unloadedContext.getValue(), description, toolchainsDeps.build()));
+    }
+
+    return targetContextsBuilder.build();
+  }
+
+  /**
+   * Returns the {@link ToolchainCollection} of {@link UnloadedToolchainContext}s for the base
+   * target and whether a Skyframe restart is needed.
+   *
+   * <p>{@code state.baseTargetUnloadedToolchainContexts} can be evaluated to {@code null} if the
+   * base target doesn't require toolchain resolution (see {@link
+   * com.google.devtools.build.lib.packages.RuleClass.ToolchainResolutionMode}). That's why an extra
+   * boolean is returned to distinguish between the case when {@code
+   * state.baseTargetUnloadedToolchainContexts} is null because a Skyframe restart is needed and
+   * when it is already evaluated to null.
+   */
+  private Pair<ToolchainCollection<UnloadedToolchainContext>, Boolean>
+      getBaseTargetUnloadedToolchainContexts(
+          State state,
+          TargetAndConfiguration targetAndConfiguration,
+          ConfiguredTargetKey configuredTargetKey,
+          Environment env)
+          throws InterruptedException, ToolchainException {
+
+    // if the base target's toolchain contexts are already evaluated, return them.
+    if (state.baseTargetUnloadedToolchainContexts != null || state.baseTargetHasNoToolchains) {
+      return Pair.of(state.baseTargetUnloadedToolchainContexts, false);
+    }
+
+    // initiate evaluating the base target's toolchain contexts.
+    if (state.baseTargetUnloadedToolchainContextsProducer == null) {
+      UnloadedToolchainContextsInputs unloadedToolchainContextsInputs =
+          DependencyResolver.getUnloadedToolchainContextsInputs(
+              targetAndConfiguration,
+              configuredTargetKey.getExecutionPlatformLabel(),
+              ruleClassProvider,
+              env.getListener());
+      state.baseTargetUnloadedToolchainContextsProducer =
+          new Driver(
+              new UnloadedToolchainContextsProducer(
+                  unloadedToolchainContextsInputs,
+                  baseTargetPrerequisitesSupplier,
+                  (UnloadedToolchainContextsProducer.ResultSink) state,
+                  t -> {
+                    return StateMachine.DONE;
+                  }));
+    }
+    if (state.baseTargetUnloadedToolchainContextsProducer.drive(env)) {
+      state.baseTargetUnloadedToolchainContextsProducer = null;
+    } else {
+      // Skyframe restart is needed
+      return Pair.of(null, true);
+    }
+    var error = state.baseTargetUnloadedToolchainContextsError;
+    if (error != null) {
+      throw error;
+    }
+
+    // base target's toolchain contexts are evaluated in this iteration without requiring a
+    // Skyframe restart.
+    return Pair.of(state.baseTargetUnloadedToolchainContexts, false);
+  }
+
+  /**
+   * Returns true if it is possible to propagate the aspects to the target's toolchains based on the
+   * conditions:
+   *
+   * <p>The base target is a rule.
+   *
+   * <p>At least one of the aspects in the aspects path propagates to toolchains.
+   */
+  private static boolean canAspectsPropagateToToolchains(
+      ImmutableList<Aspect> topologicalAspectPath, Target baseTarget) {
+    if (!baseTarget.isRule()) {
+      return false;
+    }
+
+    return topologicalAspectPath.stream()
+        .anyMatch(aspect -> aspect.getDefinition().propagatesToToolchains());
   }
 
   /** Populates {@code state.execGroupCollection} as a side effect. */
@@ -507,8 +724,7 @@ final class AspectFunction implements SkyFunction {
               initialValues.getOrThrow(
                   configuredTargetLookupKey, ConfiguredValueCreationException.class);
       if (baseConfiguredTargetValue == null) {
-        BugReport.logUnexpected(
-            "Unexpected exception with %s and AspectKey %s", key.getBaseConfiguredTargetKey(), key);
+        // Assigned target might not be configured yet, in which case Skyframe restart is needed.
         return null;
       }
       baseConfiguredTarget = baseConfiguredTargetValue.getConfiguredTarget();
@@ -602,7 +818,6 @@ final class AspectFunction implements SkyFunction {
     return (StarlarkDefinedAspect) starlarkValue;
   }
 
-  @Nullable
   private static UnloadedToolchainContextsInputs getUnloadedToolchainContextsInputs(
       AspectDefinition aspectDefinition,
       @Nullable BuildConfigurationKey configurationKey,
@@ -623,7 +838,7 @@ final class AspectFunction implements SkyFunction {
     // Note: `configuration.getOptions().hasNoConfig()` is handled early in #compute.
     return UnloadedToolchainContextsInputs.create(
         processedExecGroups,
-        createDefaultToolchainContextKey(
+        ToolchainContextUtil.createDefaultToolchainContextKey(
             configurationKey,
             aspectDefinition.execCompatibleWith(),
             /* debugTarget= */ false,
@@ -634,6 +849,7 @@ final class AspectFunction implements SkyFunction {
 
   private static boolean shouldUseAutoExecGroups(
       AspectDefinition aspectDefinition, BuildConfigurationValue configuration) {
+    // TODO: b/370558813 - Use AutoExecGroupsMode for aspects, as well.
     ImmutableMap<String, Attribute> aspectAttributes = aspectDefinition.getAttributes();
     if (aspectAttributes.containsKey("$use_auto_exec_groups")) {
       return (boolean) aspectAttributes.get("$use_auto_exec_groups").getDefaultValueUnchecked();
@@ -718,11 +934,10 @@ final class AspectFunction implements SkyFunction {
                 .addTransitive(real.getTransitivePackages())
                 .build()
             : null;
-    return AspectValue.create(
-        originalKey,
-        aspect,
-        ConfiguredAspect.forAlias(real),
-        transitivePackages);
+
+    analysisProgressReceiver.doneConfigureAspect();
+    return AspectValue.createForAlias(
+        originalKey, aspect, ConfiguredAspect.forAlias(real), transitivePackages);
   }
 
   private static AspectKey buildAliasAspectKey(
@@ -752,6 +967,8 @@ final class AspectFunction implements SkyFunction {
       BuildConfigurationValue configuration,
       ConfigConditions configConditions,
       @Nullable ToolchainCollection<ResolvedToolchainContext> toolchainContexts,
+      @Nullable
+          ToolchainCollection<AspectBaseTargetResolvedToolchainContext> baseTargetToolchainContexts,
       @Nullable ExecGroupCollection.Builder execGroupCollectionBuilder,
       OrderedSetMultimap<DependencyKind, ConfiguredTargetAndData> directDeps,
       TransitiveDependencyState transitiveState,
@@ -771,13 +988,12 @@ final class AspectFunction implements SkyFunction {
         view.createAnalysisEnvironment(key, events, env, configuration, starlarkBuiltinsValue);
 
     ConfiguredAspect configuredAspect;
-    if (aspect.getDefinition().applyToGeneratingRules() && associatedTarget instanceof OutputFile) {
-      OutputFile outputFile = (OutputFile) associatedTarget;
+    if (aspect.getDefinition().applyToGeneratingRules()
+        && associatedTarget instanceof OutputFile outputFile) {
       Label label = outputFile.getGeneratingRule().getLabel();
       return createAliasAspect(
           env, associatedTarget, key, aspect, key.withLabel(label), transitiveState);
-    } else if (aspectMatchesConfiguredTarget(
-        associatedConfiguredTarget, associatedTarget instanceof Rule, aspect)) {
+    } else {
       try {
         CurrentRuleTracker.beginConfiguredAspect(aspect.getAspectClass());
         configuredAspect =
@@ -792,6 +1008,7 @@ final class AspectFunction implements SkyFunction {
                     directDeps,
                     configConditions,
                     toolchainContexts,
+                    baseTargetToolchainContexts,
                     execGroupCollectionBuilder,
                     configuration,
                     transitiveState.transitivePackages(),
@@ -809,8 +1026,6 @@ final class AspectFunction implements SkyFunction {
       } finally {
         CurrentRuleTracker.endConfiguredAspect();
       }
-    } else {
-      configuredAspect = ConfiguredAspect.forNonapplicableTarget();
     }
 
     events.replayOn(env.getListener());
@@ -820,8 +1035,8 @@ final class AspectFunction implements SkyFunction {
       throw new AspectFunctionException(
           new AspectCreationException(msg, key.getLabel(), configuration));
     }
-    Preconditions.checkState(!analysisEnvironment.hasErrors(),
-        "Analysis environment hasError() but no errors reported");
+    Preconditions.checkState(
+        !analysisEnvironment.hasErrors(), "Analysis environment hasError() but no errors reported");
 
     if (env.valuesMissing()) {
       return null;
@@ -830,11 +1045,22 @@ final class AspectFunction implements SkyFunction {
     analysisEnvironment.disable(associatedTarget);
     Preconditions.checkNotNull(configuredAspect);
 
-    return AspectValue.create(
-        key,
-        aspect,
-        configuredAspect,
-        transitiveState.transitivePackages());
+    if (configuredAspect != NonApplicableAspect.INSTANCE) {
+      analysisProgressReceiver.doneConfigureAspect();
+    }
+    return AspectValue.create(key, aspect, configuredAspect, transitiveState.transitivePackages());
+  }
+
+  private static boolean targetSatisfiesAspect(Target target, Aspect aspect) {
+    if (target.isRule()) {
+      return ((Rule) target).satisfies(aspect.getDefinition().getRequiredProviders());
+    }
+
+    if (aspect.getDefinition().applyToFiles() || aspect.getDefinition().applyToGeneratingRules()) {
+      return true;
+    }
+
+    return false;
   }
 
   @Override

@@ -16,10 +16,15 @@
 
 import os
 import pathlib
+import shutil
+import subprocess
+import sys
 import tempfile
 from absl.testing import absltest
 from src.test.py.bazel import test_base
 from src.test.py.bazel.bzlmod.test_utils import BazelRegistry
+from src.test.py.bazel.bzlmod.test_utils import integrity
+from src.test.py.bazel.bzlmod.test_utils import read
 from src.test.py.bazel.bzlmod.test_utils import scratchFile
 
 
@@ -30,6 +35,7 @@ class BazelModuleTest(test_base.TestBase):
     self.registries_work_dir = tempfile.mkdtemp(dir=self._test_cwd)
     self.main_registry = BazelRegistry(
         os.path.join(self.registries_work_dir, 'main'))
+    self.main_registry.start()
     self.main_registry.createCcModule('aaa', '1.0').createCcModule(
         'aaa', '1.1'
     ).createCcModule(
@@ -45,6 +51,7 @@ class BazelModuleTest(test_base.TestBase):
             # In ipv6 only network, this has to be enabled.
             # 'startup --host_jvm_args=-Djava.net.preferIPv6Addresses=true',
             'build --noenable_workspace',
+            'build --incompatible_disable_native_repo_rules',
             'build --registry=' + self.main_registry.getURL(),
             # We need to have BCR here to make sure built-in modules like
             # bazel_tools can work.
@@ -60,6 +67,10 @@ class BazelModuleTest(test_base.TestBase):
             ),
         ],
     )
+
+  def tearDown(self):
+    self.main_registry.stop()
+    test_base.TestBase.tearDown(self)
 
   def writeMainProjectFiles(self):
     self.ScratchFile('aaa.patch', [
@@ -182,6 +193,100 @@ class BazelModuleTest(test_base.TestBase):
     _, stdout, _ = self.RunBazel(['run', '//:main'])
     self.assertIn('main function => aaa@1.1-1 (remotely patched)', stdout)
 
+  def testArchiveOverrideWithMainRepoLabelPatch(self):
+    self.ScratchFile(
+        'aaa.patch',
+        [
+            '--- a/aaa.cc',
+            '+++ b/aaa.cc',
+            '@@ -1,6 +1,6 @@',
+            ' #include <stdio.h>',
+            ' #include "aaa.h"',
+            ' void hello_aaa(const std::string& caller) {',
+            '-    std::string lib_name = "aaa@lol";',
+            '+    std::string lib_name = "aaa@lol (locally patched)";',
+            '     printf("%s => %s\\n", caller.c_str(), lib_name.c_str());',
+            ' }',
+        ],
+    )
+    self.main_registry.createCcModule('aaa', 'lol')
+    integ = integrity(read(self.main_registry.archives.joinpath('aaa.lol.zip')))
+    self.ScratchFile(
+        'MODULE.bazel',
+        [
+            'module(repo_name="foo")',
+            'bazel_dep(name = "aaa")',
+            'archive_override(',
+            '  module_name="aaa",',
+            '  urls=["%s/archives/aaa.lol.zip"],' % self.main_registry.getURL(),
+            '  integrity="%s",' % integ,
+            '  patches=["@foo//:aaa.patch"],',
+            '  patch_strip=1,',
+            ')',
+        ],
+    )
+    self.ScratchFile(
+        'BUILD',
+        [
+            'cc_binary(',
+            '  name = "main",',
+            '  srcs = ["main.cc"],',
+            '  deps = ["@aaa//:lib_aaa"],',
+            ')',
+        ],
+    )
+    self.ScratchFile(
+        'main.cc',
+        [
+            '#include "aaa.h"',
+            'int main() {',
+            '    hello_aaa("main function");',
+            '}',
+        ],
+    )
+    _, stdout, _ = self.RunBazel(['run', '//:main'])
+    self.assertIn('main function => aaa@lol (locally patched)', stdout)
+
+  def testArchiveOverrideWithBadLabelPatch(self):
+    self.main_registry.createCcModule('aaa', '1')
+    self.main_registry.createCcModule('bbb', '1')
+    integ = integrity(read(self.main_registry.archives.joinpath('aaa.1.zip')))
+    self.ScratchFile(
+        'MODULE.bazel',
+        [
+            'module(repo_name="foo")',
+            'bazel_dep(name = "aaa")',
+            'bazel_dep(name = "bbb", version = "1")',
+            'archive_override(',
+            '  module_name="aaa",',
+            '  urls=["%s/archives/aaa.1.zip"],' % self.main_registry.getURL(),
+            '  integrity="%s",' % integ,
+            '  patches=["@bbb//:aaa.patch"])',
+        ],
+    )
+    self.ScratchFile(
+        'BUILD',
+        [
+            'cc_binary(',
+            '  name = "main",',
+            '  srcs = ["main.cc"],',
+            '  deps = ["@aaa//:lib_aaa"],',
+            ')',
+        ],
+    )
+    self.ScratchFile(
+        'main.cc',
+        [
+            '#include "aaa.h"',
+            'int main() {',
+            '    hello_aaa("main function");',
+            '}',
+        ],
+    )
+    exit_code, _, stderr = self.RunBazel(['run', '//:main'], allow_failure=True)
+    self.AssertNotExitCode(exit_code, 0, stderr)
+    self.assertIn("@@[unknown repo 'bbb' requested from @@]", '\n'.join(stderr))
+
   def testRepoNameForBazelDep(self):
     self.writeMainProjectFiles()
     self.ScratchFile(
@@ -216,6 +321,7 @@ class BazelModuleTest(test_base.TestBase):
     _, stdout, stderr = self.RunBazel(
         ['run', '//:main', '--check_direct_dependencies=warning']
     )
+    stderr = '\n'.join(stderr)
     self.assertIn(
         'WARNING: For repository \'aaa\', the root module requires module version aaa@1.0, but got aaa@1.1 in the resolved dependency graph.',
         stderr)
@@ -230,6 +336,7 @@ class BazelModuleTest(test_base.TestBase):
         ['run', '//:main', '--check_direct_dependencies=error'],
         allow_failure=True)
     self.AssertExitCode(exit_code, 48, stderr)
+    stderr = '\n'.join(stderr)
     self.assertIn(
         'ERROR: For repository \'aaa\', the root module requires module version aaa@1.0, but got aaa@1.1 in the resolved dependency graph.',
         stderr)
@@ -260,14 +367,16 @@ class BazelModuleTest(test_base.TestBase):
     exit_code, _, stderr = self.RunBazel(['run', '@foo//...'],
                                          allow_failure=True)
     self.AssertExitCode(exit_code, 48, stderr)
+    stderr = '\n'.join(stderr)
     self.assertIn(
-        "ERROR: <builtin>: //pkg:_main~module_ext~foo: no such attribute 'invalid_attr' in 'repo_rule' rule",
-        stderr)
-    self.assertTrue(
-        any([
-            '/pkg/extension.bzl", line 3, column 14, in _module_ext_impl'
-            in line for line in stderr
-        ]))
+        '/pkg/extension.bzl:3:14: //pkg:+module_ext+foo: no such attribute'
+        " 'invalid_attr' in 'repo_rule' rule",
+        stderr,
+    )
+    self.assertIn(
+        '/pkg/extension.bzl", line 3, column 14, in _module_ext_impl',
+        stderr,
+    )
 
   def testDownload(self):
     data_path = self.ScratchFile('data.txt', ['some data'])
@@ -292,11 +401,46 @@ class BazelModuleTest(test_base.TestBase):
     ])
     self.RunBazel(['build', '@no_op//:no_op'])
 
+  def testNoRestart(self):
+    self.ScratchFile(
+        'MODULE.bazel',
+        [
+            'data_ext = use_extension("//:ext.bzl", "data_ext")',
+            'use_repo(data_ext, "no_op")',
+        ],
+    )
+    self.ScratchFile('BUILD')
+    self.ScratchFile('foo.txt', ['abc'])
+    self.ScratchFile(
+        'ext.bzl',
+        [
+            'def _no_op_impl(ctx):',
+            '  ctx.file("BUILD", "filegroup(name=\\"no_op\\")")',
+            'no_op = repository_rule(_no_op_impl)',
+            'def _data_ext_impl(ctx):',
+            '  print("I AM HERE")',
+            '  ctx.watch(Label("//:foo.txt"))',
+            '  no_op(name="no_op")',
+            'data_ext = module_extension(_data_ext_impl)',
+        ],
+    )
+    _, _, stderr = self.RunBazel(['build', '@no_op//:no_op'])
+    stderr = '\n'.join(stderr)
+    self.assertIn('I AM HERE', stderr)
+    self.assertEqual(
+        stderr.count('I AM HERE'),
+        1,
+        'expected "I AM HERE" once, but got %s times:\n%s'
+        % (stderr.count('I AM HERE'), stderr),
+    )
+
   def setUpProjectWithLocalRegistryModule(self, dep_name, dep_version):
     self.main_registry.generateCcSource(dep_name, dep_version)
     self.main_registry.createLocalPathModule(dep_name, dep_version,
                                              dep_name + '/' + dep_version)
+    self.writeCcProjectFiles(dep_name, dep_version)
 
+  def writeCcProjectFiles(self, dep_name, dep_version):
     self.ScratchFile('main.cc', [
         '#include "%s.h"' % dep_name,
         'int main() {',
@@ -314,6 +458,41 @@ class BazelModuleTest(test_base.TestBase):
         ')',
     ])
 
+  def setUpProjectWithGitRegistryModule(self, dep_name, dep_version):
+    src_dir = self.main_registry.generateCcSource(dep_name, dep_version)
+
+    # Move the src_dir to a temp dir and make that temp dir a git repo.
+    repo_dir = os.path.join(self.registries_work_dir, 'git_repo', dep_name)
+    os.makedirs(repo_dir)
+    shutil.move(
+        # Workaround https://bugs.python.org/issue32689 for Python < 3.9
+        str(src_dir),
+        repo_dir,
+    )
+    repo_dir = os.path.join(repo_dir, os.path.basename(src_dir))
+    subprocess.check_output(['git', 'init'], cwd=repo_dir)
+    subprocess.check_output(
+        ['git', 'config', 'user.email', 'example@bazel-dev.org'], cwd=repo_dir
+    )
+    subprocess.check_output(
+        ['git', 'config', 'user.name', 'example'], cwd=repo_dir
+    )
+    subprocess.check_output(['git', 'add', '--all'], cwd=repo_dir)
+    subprocess.check_output(['git', 'commit', '-m', 'Initialize'], cwd=repo_dir)
+    commit = subprocess.check_output(
+        ['git', 'rev-parse', 'HEAD'], cwd=repo_dir, universal_newlines=True
+    ).strip()
+
+    self.main_registry.createGitRepoModule(
+        dep_name,
+        dep_version,
+        repo_dir,
+        commit=commit,
+        verbose=True,
+        shallow_since='2000-01-02',
+    )
+    self.writeCcProjectFiles(dep_name, dep_version)
+
   def testLocalRepoInSourceJsonAbsoluteBasePath(self):
     self.main_registry.setModuleBasePath(str(self.main_registry.projects))
     self.setUpProjectWithLocalRegistryModule('sss', '1.3')
@@ -323,6 +502,12 @@ class BazelModuleTest(test_base.TestBase):
   def testLocalRepoInSourceJsonRelativeBasePath(self):
     self.main_registry.setModuleBasePath('projects')
     self.setUpProjectWithLocalRegistryModule('sss', '1.3')
+    _, stdout, _ = self.RunBazel(['run', '//:main'])
+    self.assertIn('main function => sss@1.3', stdout)
+
+  def testGitRepoAbsoluteBasePath(self):
+    self.main_registry.setModuleBasePath(str(self.main_registry.projects))
+    self.setUpProjectWithGitRegistryModule('sss', '1.3')
     _, stdout, _ = self.RunBazel(['run', '//:main'])
     self.assertIn('main function => sss@1.3', stdout)
 
@@ -371,10 +556,10 @@ class BazelModuleTest(test_base.TestBase):
 
     _, _, stderr = self.RunBazel(['build', '@bar//quux:book'])
     stderr = '\n'.join(stderr)
-    self.assertIn('1st: @@bar~override//quux:bleb', stderr)
-    self.assertIn('2nd: @@bar~override//bleb:bleb', stderr)
+    self.assertIn('1st: @@bar+//quux:bleb', stderr)
+    self.assertIn('2nd: @@bar+//bleb:bleb', stderr)
     self.assertIn('3rd: @@//bleb:bleb', stderr)
-    self.assertIn('4th: @@bar~override//bleb:bleb', stderr)
+    self.assertIn('4th: @@bar+//bleb:bleb', stderr)
     self.assertIn('5th: @@bleb//bleb:bleb', stderr)
     self.assertIn('6th: @@//bleb:bleb', stderr)
 
@@ -389,6 +574,10 @@ class BazelModuleTest(test_base.TestBase):
     self.ScratchFile(
         'WORKSPACE.bzlmod',
         [
+            (
+                'load("@bazel_tools//tools/build_defs/repo:local.bzl",'
+                ' "local_repository")'
+            ),
             'local_repository(name="foo", path="foo", repo_mapping={',
             '  "@bar":"@baz",',
             '  "@my_aaa":"@aaa",',
@@ -414,10 +603,10 @@ class BazelModuleTest(test_base.TestBase):
     stderr = '\n'.join(stderr)
     # @bar is mapped to @@baz, which Bzlmod doesn't recognize, so we leave it be
     self.assertIn('1st: @@baz//:z', stderr)
-    # @my_aaa is mapped to @@aaa, which Bzlmod remaps to @@aaa~1.0
-    self.assertIn('2nd: @@aaa~1.0//:z', stderr)
-    # @bbb isn't mapped in WORKSPACE, but Bzlmod maps it to @@bbb~1.0
-    self.assertIn('3rd: @@bbb~1.0//:z', stderr)
+    # @my_aaa is mapped to @@aaa, which Bzlmod remaps to @@aaa+
+    self.assertIn('2nd: @@aaa+//:z', stderr)
+    # @bbb isn't mapped in WORKSPACE, but Bzlmod maps it to @@bbb+
+    self.assertIn('3rd: @@bbb+//:z', stderr)
     # @blarg isn't mapped by WORKSPACE or Bzlmod
     self.assertIn('4th: @@blarg//:z', stderr)
 
@@ -450,6 +639,10 @@ class BazelModuleTest(test_base.TestBase):
     self.ScratchFile(
         'WORKSPACE',
         [
+            (
+                'load("@bazel_tools//tools/build_defs/repo:local.bzl",'
+                ' "local_repository")'
+            ),
             'local_repository(name="hello", path="hello")',
             'load("@hello//:world.bzl", "message")',
             'print(message)',
@@ -515,7 +708,14 @@ class BazelModuleTest(test_base.TestBase):
         ],
     )
     self.ScratchFile(
-        'WORKSPACE.bzlmod', ['local_repository(name="quux",path="quux")']
+        'WORKSPACE.bzlmod',
+        [
+            (
+                'load("@bazel_tools//tools/build_defs/repo:local.bzl",'
+                ' "local_repository")'
+            ),
+            'local_repository(name="quux",path="quux")',
+        ],
     )
     self.ScratchFile(
         'BUILD',
@@ -596,11 +796,9 @@ class BazelModuleTest(test_base.TestBase):
     )
     stderr = '\n'.join(stderr)
     self.assertIn('@@ reporting in: root@0.1', stderr)
-    self.assertIn('@@foo~1.0 reporting in: foo@1.0', stderr)
-    self.assertIn(
-        '@@foo~1.0~report_ext~report_repo reporting in: foo@1.0', stderr
-    )
-    self.assertIn('@@bar~override reporting in: bar@2.0', stderr)
+    self.assertIn('@@foo+ reporting in: foo@1.0', stderr)
+    self.assertIn('@@foo++report_ext+report_repo reporting in: foo@1.0', stderr)
+    self.assertIn('@@bar+ reporting in: bar@2.0', stderr)
     self.assertIn('@@quux reporting in: None@None', stderr)
 
   def testWorkspaceToolchainRegistrationWithPlatformsConstraint(self):
@@ -707,8 +905,8 @@ class BazelModuleTest(test_base.TestBase):
     )
     self.AssertExitCode(exit_code, 48, stderr)
     self.assertIn(
-        'Error in init_rule: A rule can only be instantiated in a BUILD file, '
-        'or a macro invoked from a BUILD file',
+        'Error in init_rule: Cannot instantiate a rule when loading a .bzl '
+        'file. Rules may be instantiated only in a BUILD thread.',
         stderr,
     )
 
@@ -746,7 +944,7 @@ class BazelModuleTest(test_base.TestBase):
     )
     self.ScratchFile('hello/MODULE.bazel', ['wat'])
     _, _, stderr = self.RunBazel(['build', '@what'], allow_failure=True)
-    self.assertIn('ERROR: @@hello~override//:MODULE.bazel', '\n'.join(stderr))
+    self.assertIn('ERROR: @@hello+//:MODULE.bazel', '\n'.join(stderr))
 
   def testLoadRulesJavaSymbolThroughBazelTools(self):
     """Tests that loads from @bazel_tools that delegate to other modules resolve."""
@@ -803,6 +1001,278 @@ class BazelModuleTest(test_base.TestBase):
     )
 
     self.RunBazel(['build', '@my_jar//jar'])
+
+  def testNoEnableNativeRepoRules(self):
+    self.ScratchFile('MODULE.bazel')
+    self.ScratchFile(
+        'WORKSPACE.bzlmod', ['local_repository(name="foo",path="foo")']
+    )
+    self.ScratchFile('BUILD', ['filegroup(name="bar")'])
+    self.ScratchFile('foo/REPO.bazel')
+    self.ScratchFile('foo/BUILD', ['filegroup(name="foo")'])
+
+    self.RunBazel([
+        'build',
+        '--enable_workspace',
+        '--noincompatible_disable_native_repo_rules',
+        '@foo',
+    ])
+    _, _, stderr = self.RunBazel(
+        [
+            'build',
+            '--enable_workspace',
+            '--incompatible_disable_native_repo_rules',
+            '@foo',
+        ],
+        allow_failure=True,
+    )
+    self.assertIn(
+        'Native repo rule local_repository is disabled', '\n'.join(stderr)
+    )
+    # a build that doesn't use the defined @foo should be ok.
+    self.RunBazel([
+        'build',
+        '--enable_workspace',
+        '--incompatible_disable_native_repo_rules',
+        ':bar',
+    ])
+
+  def testInclude(self):
+    self.ScratchFile(
+        'MODULE.bazel',
+        [
+            'module(name="foo")',
+            'bazel_dep(name="bbb", version="1.0")',
+            'include("//java:java.MODULE.bazel")',
+        ],
+    )
+    self.ScratchFile('java/BUILD')
+    self.ScratchFile(
+        'java/java.MODULE.bazel',
+        [
+            'bazel_dep(name="aaa", version="1.0", repo_name="lol")',
+        ],
+    )
+    self.ScratchFile(
+        'BUILD',
+        [
+            'cc_binary(',
+            '  name = "main",',
+            '  srcs = ["main.cc"],',
+            '  deps = ["@lol//:lib_aaa"],',
+            ')',
+        ],
+    )
+    self.ScratchFile(
+        'main.cc',
+        [
+            '#include "aaa.h"',
+            'int main() {',
+            '    hello_aaa("main function");',
+            '}',
+        ],
+    )
+    _, stdout, _ = self.RunBazel(['run', '//:main'])
+    self.assertIn('main function => aaa@1.0', stdout)
+
+  def testLabelDebugPrint(self):
+    """Tests that print emits labels in display form."""
+    self.ScratchFile(
+        'MODULE.bazel',
+        [
+            'bazel_dep(name="other_module", version="1.0")',
+            (
+                'local_path_override(module_name="other_module",'
+                ' path="other_module")'
+            ),
+            'ext = use_extension("//:defs.bzl", "my_ext")',
+            'use_repo(ext, "repo")',
+        ],
+    )
+
+    self.ScratchFile(
+        'WORKSPACE.bzlmod',
+        [
+            'load("//:defs.bzl", "my_repo")',
+            'my_repo(name = "workspace_repo", type = "workspace")',
+        ],
+    )
+
+    self.ScratchFile(
+        'other_module/MODULE.bazel',
+        ['module(name="other_module", version="1.0")'],
+    )
+
+    self.ScratchFile(
+        'defs.bzl',
+        [
+            (
+                'print("toplevel", Label("//:foo"),'
+                ' Label("@other_module//:bar"),'
+                ' Label("@@canonical_name//:baz"))'
+            ),
+            'def _repo_impl(ctx):',
+            (
+                '  print("repo:" + ctx.attr.type, Label("//:foo"),'
+                ' Label("@other_module//:bar"),'
+                ' Label("@@canonical_name//:baz"))'
+            ),
+            '  ctx.file("BUILD")',
+            '  ctx.file("data.bzl", "repo_data = \\"repo\\"")',
+            (
+                'my_repo = repository_rule(implementation=_repo_impl,'
+                ' attrs={"type":attr.string()})'
+            ),
+            'def _ext_impl(ctx):',
+            (
+                '  print("ext", Label("//:foo"), Label("@other_module//:bar"),'
+                ' Label("@@canonical_name//:baz"))'
+            ),
+            '  my_repo(name = "repo", type = "module")',
+            'my_ext = module_extension(implementation=_ext_impl)',
+            'def _rule_impl(ctx):',
+            (
+                '  print("rule", Label("//:foo"), Label("@other_module//:bar"),'
+                ' Label("@@canonical_name//:baz"))'
+            ),
+            'my_rule = rule(implementation=_rule_impl)',
+        ],
+    )
+    self.ScratchFile(
+        'BUILD',
+        [
+            'load("@repo//:data.bzl", "repo_data")',
+            'load("@workspace_repo//:data.bzl", "repo_data")',
+            'load(":defs.bzl", "my_rule")',
+            'my_rule(name = "my_rule")',
+        ],
+    )
+
+    _, _, stderr = self.RunBazel(['build', '--enable_workspace', '//:my_rule'])
+    stderr = '\n'.join(stderr)
+    self.assertIn(
+        'toplevel //:foo @other_module//:bar @@canonical_name//:baz', stderr
+    )
+    self.assertIn(
+        'repo:module //:foo @other_module//:bar @@canonical_name//:baz', stderr
+    )
+    self.assertIn(
+        'repo:workspace //:foo @other_module//:bar @@canonical_name//:baz',
+        stderr,
+    )
+    self.assertIn(
+        'ext //:foo @other_module//:bar @@canonical_name//:baz', stderr
+    )
+    self.assertIn(
+        'rule //:foo @other_module//:bar @@canonical_name//:baz', stderr
+    )
+
+  def testPendingDownloadDetected(self):
+    self.ScratchFile(
+        'MODULE.bazel',
+        [
+            'ext = use_extension("extensions.bzl", "ext")',
+            'use_repo(ext, "ext")',
+        ],
+    )
+    self.ScratchFile('BUILD')
+    self.ScratchFile(
+        'extensions.bzl',
+        [
+            'repo_rule = repository_rule(lambda _: None)',
+            'def ext_impl(module_ctx):',
+            '  repo_rule(name = "ext")',
+            (
+                '  module_ctx.download(url = "https://bcr.bazel.build", output'
+                ' = "download", block = False)'
+            ),
+            'ext = module_extension(implementation = ext_impl)',
+        ],
+    )
+    exit_code, _, stderr = self.RunBazel(
+        ['build', '--nobuild', '@ext//:all'],
+        allow_failure=True,
+    )
+    self.AssertExitCode(exit_code, 48, stderr)
+    self.assertIn(
+        'ERROR: Pending asynchronous work after module extension'
+        ' @@//:extensions.bzl%ext finished execution',
+        stderr,
+    )
+
+  def testRegression22754(self):
+    """Regression test for issue #22754."""
+    self.ScratchFile('BUILD.bazel', ['print(glob(["testdata/**"]))'])
+    self.ScratchFile('testdata/WORKSPACE')
+    self.RunBazel(['build', ':all'])
+
+  def testUnicodePaths(self):
+    if sys.getfilesystemencoding() != 'utf-8':
+      self.skipTest('Test requires UTF-8 by default (Python 3.7+)')
+
+    unicode_dir = 'äöüÄÖÜß'
+    self.ScratchFile(unicode_dir + '/MODULE.bazel', ['module(name = "module")'])
+    self.ScratchFile(
+        unicode_dir + '/BUILD',
+        [
+            'filegroup(name = "choose_me")',
+        ],
+    )
+    self.writeMainProjectFiles()
+    self.ScratchFile(
+        'MODULE.bazel',
+        [
+            'bazel_dep(name = "module")',
+            'local_path_override(',
+            '  module_name = "module",',
+            '  path = "%s",' % unicode_dir,
+            ')',
+        ],
+    )
+    self.RunBazel(['build', '@module//:choose_me'])
+
+  def testUnicodeTags(self):
+    unicode_str = 'äöüÄÖÜß'
+    self.ScratchFile(
+        'MODULE.bazel',
+        [
+            'ext = use_extension("extensions.bzl", "ext")',
+            'ext.tag(attr = "%s")' % unicode_str,
+            'use_repo(ext, "ext")',
+        ],
+    )
+    self.ScratchFile('BUILD')
+    self.ScratchFile(
+        'extensions.bzl',
+        [
+            'def repo_rule_impl(ctx):',
+            '  ctx.file("BUILD")',
+            '  print("DATA: " + ctx.attr.tag)',
+            'repo_rule = repository_rule(',
+            '  implementation = repo_rule_impl,',
+            '  attrs = {',
+            '    "tag": attr.string(),',
+            '  },',
+            ')',
+            'def ext_impl(module_ctx):',
+            '  repo_rule(',
+            '    name = "ext",',
+            '    tag = module_ctx.modules[0].tags.tag[0].attr,',
+            '  )',
+            'tag = tag_class(',
+            '  attrs = {',
+            '    "attr": attr.string(),',
+            '  },',
+            ')',
+            'ext = module_extension(  implementation = ext_impl,',
+            '  tag_classes = {',
+            '    "tag": tag,',
+            '  },',
+            ')',
+        ],
+    )
+    _, _, stderr = self.RunBazel(['build', '@ext//:all'])
+    self.assertIn('DATA: ' + unicode_str, '\n'.join(stderr))
 
 
 if __name__ == '__main__':

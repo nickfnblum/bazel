@@ -17,19 +17,17 @@ Definition of CcToolchainInfo provider.
 """
 
 load(":common/cc/cc_common.bzl", "cc_common")
-load(":common/cc/cc_helper.bzl", "cc_helper")
 
 cc_internal = _builtins.internal.cc_internal
 
 def _needs_pic_for_dynamic_libraries(*, feature_configuration):
-    return cc_internal.cpp_config_from_feature_config(feature_configuration = feature_configuration).force_pic() or \
-           cc_common.is_enabled(feature_configuration = feature_configuration, feature_name = "supports_pic")
+    return cc_common.is_enabled(feature_configuration = feature_configuration, feature_name = "supports_pic")
 
 def _static_runtime_lib(static_runtime_lib):
     def static_runtime_lib_func(*, feature_configuration):
         if cc_common.is_enabled(feature_configuration = feature_configuration, feature_name = "static_link_cpp_runtimes"):
             if static_runtime_lib == None:
-                fail("Toolchain supports embedded runtimes, but didn't provide static_runtime_lib attribute")
+                fail("Toolchain supports embedded runtimes, but didn't provide static_runtime_lib attribute.")
             return static_runtime_lib
         return depset()
 
@@ -39,7 +37,7 @@ def _dynamic_runtime_lib(dynamic_runtime_lib):
     def dynamic_runtime_lib_func(*, feature_configuration):
         if cc_common.is_enabled(feature_configuration = feature_configuration, feature_name = "static_link_cpp_runtimes"):
             if dynamic_runtime_lib == None:
-                fail("Toolchain supports embedded runtimes, but didn't provide dynamic_runtime_lib attribute")
+                fail("Toolchain supports embedded runtimes, but didn't provide dynamic_runtime_lib attribute.")
             return dynamic_runtime_lib
         return depset()
 
@@ -73,10 +71,12 @@ def _create_cc_toolchain_info(
         toolchain_label,
         cpp_configuration,
         is_tool_configuration,
+        is_sibling_repository_layout,
+        stamp_binaries,
         default_sysroot,
         builtin_include_files,
+        build_variables_dict,
         build_variables,
-        xcode_config_info,
         cc_info,
         all_files,
         all_files_including_libc,
@@ -95,9 +95,11 @@ def _create_cc_toolchain_info(
         grep_includes,
         allowlist_for_layering_check,
         build_info_files,
-        objcopy_files):
+        objcopy_files,
+        aggregate_ddi,
+        generate_modmap):
     cc_toolchain_info = dict(
-        needs_pic_for_dynamic_libraries = _needs_pic_for_dynamic_libraries,
+        needs_pic_for_dynamic_libraries = (lambda *, feature_configuration: True) if cpp_configuration.force_pic() else _needs_pic_for_dynamic_libraries,
         built_in_include_directories = built_in_include_directories,
         all_files = all_files,
         static_runtime_lib = _static_runtime_lib(static_runtime_lib_depset),
@@ -145,18 +147,20 @@ def _create_cc_toolchain_info(
         _link_dynamic_library_tool = link_dynamic_library_tool,
         _grep_includes = grep_includes,
         _if_so_builder = if_so_builder,
-        _target_os = toolchain_config_info.target_os(),
         _is_tool_configuration = is_tool_configuration,
+        _is_sibling_repository_layout = is_sibling_repository_layout,
+        _stamp_binaries = stamp_binaries,
         _default_sysroot = default_sysroot,
         _static_runtime_lib_depset = static_runtime_lib_depset,
         _dynamic_runtime_lib_depset = dynamic_runtime_lib_depset,
         _compiler_files_without_includes = compiler_files_without_includes,
+        _build_variables_dict = build_variables_dict,
         _build_variables = build_variables,
         _allowlist_for_layering_check = allowlist_for_layering_check,
-        _build_vars_func = cc_helper.build_variables,
-        _xcode_config_info = xcode_config_info,
         _cc_info = cc_info,
         _objcopy_files = objcopy_files,
+        _aggregate_ddi = aggregate_ddi,
+        _generate_modmap = generate_modmap,
     )
     return cc_toolchain_info
 
@@ -229,8 +233,8 @@ CcToolchainInfo, _ = provider(
         "_abi_glibc_version": "INTERNAL API, DO NOT USE!",
         "_crosstool_top_path": "INTERNAL API, DO NOT USE!",
         "_build_info_files": "INTERNAL API, DO NOT USE!",
+        "_build_variables_dict": "INTERNAL API, DO NOT USE!",
         "_build_variables": "INTERNAL API, DO NOT USE!",
-        "_xcode_config_info": "INTERNAL API, DO NOT USE!",
         # Fields still used by native code - will be used by Starlark in the future.
         "_supports_header_parsing": "INTERNAL API, DO NOT USE!",
         "_supports_param_files": "INTERNAL API, DO NOT USE!",
@@ -240,16 +244,18 @@ CcToolchainInfo, _ = provider(
         "_link_dynamic_library_tool": "INTERNAL API, DO NOT USE!",
         "_grep_includes": "INTERNAL API, DO NOT USE!",
         "_if_so_builder": "INTERNAL API, DO NOT USE!",
-        "_target_os": "INTERNAL API, DO NOT USE!",
         "_is_tool_configuration": "INTERNAL API, DO NOT USE!",
+        "_is_sibling_repository_layout": "INTERNAL API, DO NOT USE!",
+        "_stamp_binaries": "INTERNAL API, DO NOT USE!",
         "_default_sysroot": "INTERNAL API, DO NOT USE!",
         "_static_runtime_lib_depset": "INTERNAL API, DO NOT USE!",
         "_dynamic_runtime_lib_depset": "INTERNAL API, DO NOT USE!",
         "_compiler_files_without_includes": "INTERNAL API, DO NOT USE!",
         "_allowlist_for_layering_check": "INTERNAL API, DO NOT USE!",
-        "_build_vars_func": "INTERNAL API, DO NOT USE!",
         "_cc_info": "INTERNAL API, DO NOT USE!",
         "_objcopy_files": "INTERNAL API, DO NOT USE!",
+        "_aggregate_ddi": "INTERNAL API, DO NOT USE!",
+        "_generate_modmap": "INTERNAL API, DO NOT USE!",
     },
     init = _create_cc_toolchain_info,
 )

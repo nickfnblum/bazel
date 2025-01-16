@@ -16,8 +16,9 @@ package com.google.devtools.build.lib.authandtls.credentialhelper;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.Ticker;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.authandtls.AuthAndTLSOptions;
 import com.google.devtools.build.lib.runtime.BlazeModule;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
@@ -27,14 +28,21 @@ import java.time.Duration;
 
 /** A module whose sole purpose is to hold the credential cache which is shared by other modules. */
 public class CredentialModule extends BlazeModule {
-  private final Cache<URI, ImmutableMap<String, ImmutableList<String>>> credentialCache =
-      Caffeine.newBuilder()
-          .expireAfterWrite(Duration.ZERO)
-          .ticker(SystemMillisTicker.INSTANCE)
-          .build();
+  private final CredentialCacheExpiry cacheExpiry = new CredentialCacheExpiry();
+  private final Cache<URI, GetCredentialsResponse> credentialCache;
+  private Duration lastDefaultCacheDuration = Duration.ZERO;
+
+  public CredentialModule() {
+    this(Ticker.systemTicker());
+  }
+
+  @VisibleForTesting
+  CredentialModule(Ticker ticker) {
+    this.credentialCache = Caffeine.newBuilder().ticker(ticker).expireAfter(cacheExpiry).build();
+  }
 
   /** Returns the credential cache. */
-  public Cache<URI, ImmutableMap<String, ImmutableList<String>>> getCredentialCache() {
+  public Cache<URI, GetCredentialsResponse> getCredentialCache() {
     return credentialCache;
   }
 
@@ -45,17 +53,19 @@ public class CredentialModule extends BlazeModule {
 
   @Override
   public void beforeCommand(CommandEnvironment env) {
-    // Update the cache expiration policy according to the command options.
-    AuthAndTLSOptions authAndTlsOptions = env.getOptions().getOptions(AuthAndTLSOptions.class);
-    credentialCache
-        .policy()
-        .expireAfterWrite()
-        .get()
-        .setExpiresAfter(authAndTlsOptions.credentialHelperCacheTimeout);
+    Duration defaultCacheDuration =
+        env.getOptions().getOptions(AuthAndTLSOptions.class).credentialHelperCacheTimeout;
 
-    // Clear the cache on clean.
-    if (env.getCommand().name().equals("clean")) {
+    boolean defaultCacheDurationChanged = !defaultCacheDuration.equals(lastDefaultCacheDuration);
+    lastDefaultCacheDuration = defaultCacheDuration;
+
+    // Clear the cache on clean or when the default cache duration changes.
+    if (env.getCommandName().equals("clean") || defaultCacheDurationChanged) {
       credentialCache.invalidateAll();
+      credentialCache.cleanUp();
     }
+
+    // Update the expiration policy for future entries.
+    cacheExpiry.setDefaultCacheDuration(defaultCacheDuration);
   }
 }

@@ -34,7 +34,6 @@ import com.google.devtools.common.options.OptionDefinition;
 import com.google.devtools.common.options.OptionsParser;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.lang.reflect.Field;
 import java.util.Map;
 import net.starlark.java.annot.Param;
 import net.starlark.java.annot.StarlarkMethod;
@@ -82,25 +81,20 @@ public class StarlarkOutputFormatterCallback extends CqueryThreadsafeCallback {
           String optionName = def.getOptionName();
           String optionKey = COMMAND_LINE_OPTION_PREFIX + optionName;
 
-          try {
-            Field field = def.getField();
-            FragmentOptions options = buildOptions.get(optionClass);
-            Object optionValue = field.get(options);
+          FragmentOptions options = buildOptions.get(optionClass);
+          Object optionValue = def.getValue(options);
 
-            try {
-              // fromJava is not a deep validity check.
-              // It is not guaranteed to catch all errors,
-              // nor does it specify how it reports the errors it does find.
-              // Passing arbitrary Java values into the Starlark interpreter
-              // is not safe.
-              // TODO(cparsons,twigg): fix it: convert value by explicit cases.
-              result.put(optionKey, Starlark.fromJava(optionValue, null));
-            } catch (IllegalArgumentException | NullPointerException ex) {
-              // optionValue is not a valid Starlark value, so skip this option.
-              // (e.g. tristate; a map with null values)
-            }
-          } catch (IllegalAccessException e) {
-            throw new IllegalStateException(e);
+          try {
+            // fromJava is not a deep validity check.
+            // It is not guaranteed to catch all errors,
+            // nor does it specify how it reports the errors it does find.
+            // Passing arbitrary Java values into the Starlark interpreter
+            // is not safe.
+            // TODO(cparsons,twigg): fix it: convert value by explicit cases.
+            result.put(optionKey, Starlark.fromJava(optionValue, null));
+          } catch (IllegalArgumentException | NullPointerException ex) {
+            // optionValue is not a valid Starlark value, so skip this option.
+            // (e.g. tristate; a map with null values)
           }
         }
       }
@@ -126,8 +120,6 @@ public class StarlarkOutputFormatterCallback extends CqueryThreadsafeCallback {
       return ret;
     }
   }
-
-  private static final Object[] NO_ARGS = new Object[0];
 
   // Starlark function with single required parameter "target", a CqueryNode query result.
   private final StarlarkFunction formatFn;
@@ -189,7 +181,7 @@ public class StarlarkOutputFormatterCallback extends CqueryThreadsafeCallback {
       env.putAll(StarlarkGlobalsImpl.INSTANCE.getUtilToplevelsForCquery());
       Module module = Module.withPredeclared(starlarkSemantics, env.buildOrThrow());
 
-      StarlarkThread thread = new StarlarkThread(mu, starlarkSemantics);
+      StarlarkThread thread = StarlarkThread.createTransient(mu, starlarkSemantics);
       Starlark.execFile(input, FileOptions.DEFAULT, module, thread);
       Object formatFn = module.getGlobal("format");
       if (formatFn == null) {
@@ -231,11 +223,12 @@ public class StarlarkOutputFormatterCallback extends CqueryThreadsafeCallback {
     for (CqueryNode target : partialResult) {
       try {
         StarlarkThread thread =
-            new StarlarkThread(Mutability.create("cquery evaluation"), starlarkSemantics);
+            StarlarkThread.createTransient(
+                Mutability.create("cquery evaluation"), starlarkSemantics);
         thread.setMaxExecutionSteps(500_000L);
 
         // Invoke formatFn with `target` argument.
-        Object result = Starlark.fastcall(thread, this.formatFn, new Object[] {target}, NO_ARGS);
+        Object result = Starlark.positionalOnlyCall(thread, this.formatFn, target);
 
         addResult(Starlark.str(result, thread.getSemantics()));
       } catch (EvalException ex) {

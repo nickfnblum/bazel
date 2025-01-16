@@ -16,7 +16,6 @@ package com.google.devtools.build.lib.analysis.constraints;
 
 import static java.util.stream.Collectors.joining;
 
-import com.google.auto.value.AutoValue;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
 import com.google.common.collect.ArrayListMultimap;
@@ -34,7 +33,6 @@ import com.google.devtools.build.lib.analysis.platform.ConstraintValueInfo;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
-import com.google.devtools.build.lib.packages.EnvironmentGroup;
 import com.google.devtools.build.lib.packages.EnvironmentLabels;
 import com.google.devtools.build.lib.packages.NoSuchPackageException;
 import com.google.devtools.build.lib.packages.NoSuchTargetException;
@@ -43,7 +41,7 @@ import com.google.devtools.build.lib.pkgcache.PackageManager;
 import com.google.devtools.build.lib.server.FailureDetails.Analysis;
 import com.google.devtools.build.lib.server.FailureDetails.Analysis.Code;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
-import com.google.devtools.build.lib.skyframe.SaneAnalysisException;
+import com.google.devtools.build.lib.skyframe.AbstractSaneAnalysisException;
 import com.google.devtools.build.lib.skyframe.config.BuildConfigurationKey;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import java.util.ArrayList;
@@ -148,7 +146,7 @@ public class TopLevelConstraintSemantics {
     String targetIncompatibleMessage =
         String.format(
             TARGET_INCOMPATIBLE_ERROR_TEMPLATE,
-            configuredTarget.getLabel(),
+            configuredTarget.getOriginalLabel(),
             // We need access to the provider so we pass in the underlying target here that is
             // responsible for the incompatibility.
             reportOnIncompatibility(underlyingTarget));
@@ -209,26 +207,6 @@ public class TopLevelConstraintSemantics {
       return EnvironmentCompatibility.severeIncompatible(severeMissingEnvironments);
     }
 
-    // Check auto-detected CPU environments.
-    try {
-      ImmutableSet<MissingEnvironment> nonSevereMissingEnvironment =
-          getMissingEnvironments(
-              configuredTarget,
-              autoConfigureTargetEnvironments(
-                  buildConfigurationValue,
-                  buildConfigurationValue.getAutoCpuEnvironmentGroup(),
-                  targetLookup),
-              targetLookup);
-      if (nonSevereMissingEnvironment == null) {
-        return null;
-      }
-      if (!nonSevereMissingEnvironment.isEmpty()) {
-        return EnvironmentCompatibility.nonSevereIncompatible();
-      }
-    } catch (NoSuchPackageException | NoSuchTargetException e) {
-      throw new TargetCompatibilityCheckException(
-          "invalid target environment", e.getDetailedExitCode().getFailureDetail(), e);
-    }
     return EnvironmentCompatibility.compatible();
   }
 
@@ -269,7 +247,7 @@ public class TopLevelConstraintSemantics {
                 target,
                 eventHandler,
                 /* eagerlyThrowError= */ !keepGoing,
-                explicitTargetPatterns.contains(target.getLabel()),
+                explicitTargetPatterns.contains(target.getOriginalLabel()),
                 skipIncompatibleExplicitTargets);
         if (PlatformCompatibility.INCOMPATIBLE_EXPLICIT.equals(platformCompatibility)) {
           incompatibleButRequestedTargets.add(target);
@@ -409,37 +387,6 @@ public class TopLevelConstraintSemantics {
   }
 
   /**
-   * Helper method for {@link #checkTargetEnvironmentRestrictions} that populates inferred expected
-   * environments.
-   */
-  @Nullable
-  private static ImmutableList<Label> autoConfigureTargetEnvironments(
-      BuildConfigurationValue config,
-      @Nullable Label environmentGroupLabel,
-      TargetLookup targetLookup)
-      throws InterruptedException, NoSuchTargetException, NoSuchPackageException {
-    if (environmentGroupLabel == null) {
-      return ImmutableList.of();
-    }
-
-    EnvironmentGroup environmentGroup =
-        (EnvironmentGroup) targetLookup.getTarget(environmentGroupLabel);
-    // Missing value.
-    if (environmentGroup == null) {
-      return null;
-    }
-
-    ImmutableList.Builder<Label> targetEnvironments = new ImmutableList.Builder<>();
-    for (Label environmentLabel : environmentGroup.getEnvironments()) {
-      if (environmentLabel.getName().equals(config.getCpu())) {
-        targetEnvironments.add(environmentLabel);
-      }
-    }
-
-    return targetEnvironments.build();
-  }
-
-  /**
    * Returns the expected environments that the given top-level target doesn't support.
    *
    * @param topLevelTarget the top-level target to check
@@ -488,8 +435,8 @@ public class TopLevelConstraintSemantics {
     topLevelTarget = topLevelTarget.getActual();
     // Now check the target against expected environments.
     TransitiveInfoCollection asProvider;
-    if (topLevelTarget instanceof OutputFileConfiguredTarget) {
-      asProvider = ((OutputFileConfiguredTarget) topLevelTarget).getGeneratingRule();
+    if (topLevelTarget instanceof OutputFileConfiguredTarget outputFileConfiguredTarget) {
+      asProvider = outputFileConfiguredTarget.getGeneratingRule();
     } else {
       asProvider = topLevelTarget;
     }
@@ -543,8 +490,8 @@ public class TopLevelConstraintSemantics {
       Collection<MissingEnvironment> missingEnvironments) {
     StringJoiner msg = new StringJoiner("\n");
     ConfiguredTarget targetWithProvider = configuredTarget.getActual();
-    if (targetWithProvider instanceof OutputFileConfiguredTarget) {
-      targetWithProvider = ((OutputFileConfiguredTarget) targetWithProvider).getGeneratingRule();
+    if (targetWithProvider instanceof OutputFileConfiguredTarget outputFileConfiguredTarget) {
+      targetWithProvider = outputFileConfiguredTarget.getGeneratingRule();
     }
     SupportedEnvironmentsProvider supportedEnvironments =
         targetWithProvider.getProvider(SupportedEnvironmentsProvider.class);
@@ -589,27 +536,22 @@ public class TopLevelConstraintSemantics {
   }
 
   /** Tells the compatibility of a ConfiguredTarget with the target environment. */
-  @AutoValue
-  public abstract static class EnvironmentCompatibility {
-    public abstract boolean isCompatible();
-
-    @Nullable
-    public abstract ImmutableSet<MissingEnvironment> severeMissingEnvironments();
+  public record EnvironmentCompatibility(
+      boolean isCompatible, @Nullable ImmutableSet<MissingEnvironment> severeMissingEnvironments) {
 
     public static EnvironmentCompatibility compatible() {
-      return new AutoValue_TopLevelConstraintSemantics_EnvironmentCompatibility(
-          /*isCompatible=*/ true, /*severeMissingEnvironments=*/ null);
+      return new EnvironmentCompatibility(
+          /* isCompatible= */ true, /* severeMissingEnvironments= */ null);
     }
 
     public static EnvironmentCompatibility nonSevereIncompatible() {
-      return new AutoValue_TopLevelConstraintSemantics_EnvironmentCompatibility(
-          /*isCompatible=*/ false, /*severeMissingEnvironments=*/ null);
+      return new EnvironmentCompatibility(
+          /* isCompatible= */ false, /* severeMissingEnvironments= */ null);
     }
 
     public static EnvironmentCompatibility severeIncompatible(
         ImmutableSet<MissingEnvironment> severeMissingEnvironments) {
-      return new AutoValue_TopLevelConstraintSemantics_EnvironmentCompatibility(
-          /*isCompatible=*/ false, severeMissingEnvironments);
+      return new EnvironmentCompatibility(/* isCompatible= */ false, severeMissingEnvironments);
     }
   }
 
@@ -621,8 +563,7 @@ public class TopLevelConstraintSemantics {
   }
 
   /** For Exceptions that arise during the compatibility checking of a target. */
-  public static class TargetCompatibilityCheckException extends Exception
-      implements SaneAnalysisException {
+  public static class TargetCompatibilityCheckException extends AbstractSaneAnalysisException {
     private final FailureDetail failureDetail;
 
     public TargetCompatibilityCheckException(String message, FailureDetail failureDetail) {

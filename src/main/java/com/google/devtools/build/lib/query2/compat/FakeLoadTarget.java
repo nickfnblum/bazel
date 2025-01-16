@@ -45,11 +45,6 @@ public class FakeLoadTarget implements Target {
   }
 
   @Override
-  public String getName() {
-    return label.getName();
-  }
-
-  @Override
   public Package getPackage() {
     return pkg;
   }
@@ -80,7 +75,7 @@ public class FakeLoadTarget implements Target {
   }
 
   @Override
-  public RuleVisibility getVisibility() {
+  public RuleVisibility getRawVisibility() {
     return RuleVisibility.PUBLIC;
   }
 
@@ -101,10 +96,9 @@ public class FakeLoadTarget implements Target {
 
   @Override
   public boolean equals(Object obj) {
-    if (!(obj instanceof FakeLoadTarget)) {
+    if (!(obj instanceof FakeLoadTarget other)) {
       return false;
     }
-    FakeLoadTarget other = (FakeLoadTarget) obj;
     return label.equals(other.label) && pkg.equals(other.pkg);
   }
 

@@ -15,7 +15,6 @@ package com.google.devtools.build.lib.analysis;
 
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.devtools.build.lib.packages.ExecGroup.DEFAULT_EXEC_GROUP_NAME;
-import static java.util.stream.Collectors.joining;
 
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.HashBasedTable;
@@ -31,7 +30,7 @@ import com.google.devtools.build.lib.packages.ExecGroup;
 import com.google.devtools.build.lib.server.FailureDetails.Analysis;
 import com.google.devtools.build.lib.server.FailureDetails.Analysis.Code;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
-import com.google.devtools.build.lib.skyframe.SaneAnalysisException;
+import com.google.devtools.build.lib.skyframe.AbstractSaneAnalysisException;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -48,8 +47,7 @@ public abstract class ExecGroupCollection {
   /**
    * Prepares the input exec groups to serve as {@link Builder#execGroups}.
    *
-   * <p>Applies any inheritance specified via {@link ExecGroup#copyFrom} and adds auto exec groups
-   * when {@code useAutoExecGroups} is true.
+   * <p>Adds auto exec groups when {@code useAutoExecGroups} is true.
    */
   public static ImmutableMap<String, ExecGroup> process(
       ImmutableMap<String, ExecGroup> execGroups,
@@ -65,16 +63,12 @@ public abstract class ExecGroupCollection {
       String name = entry.getKey();
       ExecGroup execGroup = entry.getValue();
 
-      if (execGroup.copyFrom() != null) {
-        if (execGroup.copyFrom().equals(DEFAULT_EXEC_GROUP_NAME)) {
+      if (execGroup.copyFromDefault()) {
           execGroup =
               ExecGroup.builder()
                   .execCompatibleWith(defaultExecWith)
                   .toolchainTypes(defaultToolchainTypes)
                   .build();
-        } else {
-          execGroup = execGroup.inheritFrom(execGroups.get(execGroup.copyFrom()));
-        }
       }
 
       processedGroups.put(name, execGroup);
@@ -87,7 +81,6 @@ public abstract class ExecGroupCollection {
             toolchainType.toolchainType().toString(),
             ExecGroup.builder()
                 .addToolchainType(toolchainType)
-                .copyFrom(null)
                 .execCompatibleWith(defaultExecWith)
                 .build());
       }
@@ -262,14 +255,13 @@ public abstract class ExecGroupCollection {
   }
 
   /** An error for when the user tries to access a non-existent exec group. */
-  public static final class InvalidExecGroupException extends Exception
-      implements SaneAnalysisException {
+  public static final class InvalidExecGroupException extends AbstractSaneAnalysisException {
 
     public InvalidExecGroupException(Collection<String> invalidNames) {
       super(
           String.format(
               "Tried to set properties for non-existent exec groups: %s.",
-              invalidNames.stream().collect(joining(","))));
+              String.join(",", invalidNames)));
     }
 
     @Override

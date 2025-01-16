@@ -16,21 +16,26 @@ package com.google.devtools.build.lib.vfs;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.common.truth.TruthJUnit.assume;
+import static java.lang.Math.min;
 import static java.nio.charset.StandardCharsets.ISO_8859_1;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.fail;
+import static org.junit.Assume.assumeTrue;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.Sets;
 import com.google.common.io.BaseEncoding;
 import com.google.devtools.build.lib.testutil.TestUtils;
-import com.google.devtools.build.lib.unix.FileStatus;
-import com.google.devtools.build.lib.unix.NativePosixFiles;
 import com.google.devtools.build.lib.util.Fingerprint;
+import com.google.devtools.build.lib.util.StringEncoding;
 import com.google.testing.junit.testparameterinjector.TestParameter;
-import com.google.testing.junit.testparameterinjector.TestParameter.TestParameterValuesProvider;
 import com.google.testing.junit.testparameterinjector.TestParameterInjector;
+import com.google.testing.junit.testparameterinjector.TestParameterValuesProvider;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -40,12 +45,13 @@ import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
-import java.nio.charset.StandardCharsets;
+import java.nio.charset.Charset;
 import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.Files;
+import java.nio.file.attribute.PosixFilePermission;
+import java.time.Instant;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -74,9 +80,9 @@ public abstract class FileSystemTest {
   @TestParameter(valuesProvider = DigestHashFunctionsProvider.class)
   public DigestHashFunction digestHashFunction;
 
-  private static final class DigestHashFunctionsProvider implements TestParameterValuesProvider {
+  private static final class DigestHashFunctionsProvider extends TestParameterValuesProvider {
     @Override
-    public ImmutableList<?> provideValues() {
+    public ImmutableList<?> provideValues(Context context) {
       return DigestHashFunction.getPossibleHashFunctions().asList();
     }
   }
@@ -123,81 +129,51 @@ public abstract class FileSystemTest {
   protected abstract FileSystem getFreshFileSystem(DigestHashFunction digestHashFunction)
       throws IOException;
 
-  protected boolean isSymbolicLink(File file) throws IOException {
-    return NativePosixFiles.lstat(file.getPath()).isSymbolicLink();
-  }
-
-  private static final Pattern STAT_SUBDIR_ERROR = Pattern.compile("(.*) \\(Not a directory\\)");
-
-  // Test that file is not present, using statIfFound. Base implementation throws an exception, but
-  // subclasses may override statIfFound to return null, in which case their tests should override
-  // this method.
-  @SuppressWarnings("unused") // Subclasses may throw.
-  protected void expectNotFound(Path path) throws IOException {
-    try {
-      assertThat(path.statIfFound()).isNull();
-    } catch (IOException e) {
-      // May be because of a non-directory path component. Parse exception to check this.
-      Matcher matcher = STAT_SUBDIR_ERROR.matcher(e.getMessage());
-      if (!matcher.matches() || !path.getPathString().startsWith(matcher.group(1))) {
-        // Throw if this doesn't match what an ENOTDIR error looks like.
-        throw e;
-      }
-    }
-  }
-
   /**
    * Cleans up the working directory by removing everything.
    */
   protected void cleanUpWorkingDirectory(Path workingPath)
       throws IOException {
     if (workingPath.exists()) {
-      removeEntireDirectory(workingPath.getPathFile()); // uses java.io.File!
+      removeEntireDirectory(workingPath.getPathFile().toPath()); // uses java.nio.file.Path!
     }
     workingPath.createDirectoryAndParents();
   }
 
   /**
-   * This function removes an entire directory and all of its contents.
-   * Much like rm -rf directoryToRemove
+   * This function removes an entire directory and all of its contents. Much like rm -rf
+   * directoryToRemove
+   *
+   * <p>This method explicitly only uses Java APIs to interact with files to prevent any issues with
+   * Bazel's own file systems from leaking from one test to another.
    */
-  protected void removeEntireDirectory(File directoryToRemove)
-      throws IOException {
+  protected void removeEntireDirectory(java.nio.file.Path directoryToRemove) throws IOException {
     // make sure that we do not remove anything outside the test directory
     Path testDirPath = testFS.getPath(getTestTmpDir());
-    if (!testFS.getPath(directoryToRemove.getAbsolutePath()).startsWith(testDirPath)) {
+    if (!testFS.getPath(directoryToRemove.toAbsolutePath().toString()).startsWith(testDirPath)) {
       throw new IOException("trying to remove files outside of the testdata directory");
     }
     // Some tests set the directories read-only and/or non-executable, so
     // override that:
-    NativePosixFiles.chmod(
-        directoryToRemove.getPath(),
-        NativePosixFiles.lstat(directoryToRemove.getPath()).getPermissions()
-            | FileStatus.S_IWUSR
-            | FileStatus.S_IXUSR);
+    Files.setPosixFilePermissions(
+        directoryToRemove,
+        Sets.union(
+            Files.getPosixFilePermissions(directoryToRemove),
+            ImmutableSet.of(PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE)));
 
-    File[] files = directoryToRemove.listFiles();
-    if (files != null) {
-      for (File currentFile : files) {
-        boolean isSymbolicLink = isSymbolicLink(currentFile);
-        if (!isSymbolicLink && currentFile.isDirectory()) {
-          removeEntireDirectory(currentFile);
-        } else {
-          if (!isSymbolicLink) {
-            NativePosixFiles.chmod(
-                currentFile.getPath(),
-                NativePosixFiles.lstat(currentFile.getPath()).getPermissions()
-                    | FileStatus.S_IWUSR);
-          }
-          if (!currentFile.delete()) {
-            throw new IOException("Failed to delete '" + currentFile + "'");
-          }
-        }
+    java.nio.file.Path[] entries;
+    try (var entriesStream = Files.list(directoryToRemove)) {
+      entries = entriesStream.toArray(java.nio.file.Path[]::new);
+    }
+    for (var entry : entries) {
+      boolean isSymbolicLink = Files.isSymbolicLink(entry);
+      if (!isSymbolicLink && Files.isDirectory(entry)) {
+        removeEntireDirectory(entry);
+      } else {
+        Files.delete(entry);
       }
     }
-    if (!directoryToRemove.delete()) {
-      throw new IOException("Failed to delete '" + directoryToRemove + "'");
-    }
+    Files.delete(directoryToRemove);
   }
 
   /** Recursively make directories readable/executable and files readable. */
@@ -237,15 +213,6 @@ public abstract class FileSystemTest {
    */
   protected void createSymbolicLink(Path link, PathFragment target) throws IOException {
     link.createSymbolicLink(target);
-  }
-
-  /**
-   * Indirection to setReadOnly(false) on FileSystems that do not
-   * support setReadOnly(false).  For example, JavaFileSystemTest overrides this
-   * method and makes the Path writable with an alternate FileSystem.
-   */
-  protected void makeWritable(Path target) throws IOException {
-    target.setWritable(true);
   }
 
   /**
@@ -296,7 +263,7 @@ public abstract class FileSystemTest {
   public void testExistsForNonexistingPath() throws Exception {
     Path nonExistingPath = testFS.getPath("/something/strange");
     assertThat(nonExistingPath.exists()).isFalse();
-    expectNotFound(nonExistingPath);
+    assertThat(nonExistingPath.statIfFound()).isNull();
   }
 
   @Test
@@ -480,7 +447,7 @@ public abstract class FileSystemTest {
     FileSystemUtils.createEmptyFile(somePath);
     Path childOfNonDir = somePath.getChild("child");
     assertThat(childOfNonDir.exists()).isFalse();
-    expectNotFound(childOfNonDir);
+    assertThat(childOfNonDir.statIfFound()).isNull();
   }
 
   @Test
@@ -1176,6 +1143,40 @@ public abstract class FileSystemTest {
   }
 
   // Test the date functions
+
+  @Test
+  public void testSetLastModifiedTime_32bit() throws Exception {
+    Path file = absolutize("file");
+    FileSystemUtils.createEmptyFile(file);
+
+    file.setLastModifiedTime(1 << 30);
+    assertThat(file.getLastModifiedTime()).isEqualTo(1 << 30);
+  }
+
+  @Test
+  public void testSetLastModifiedTime_64bit() throws Exception {
+    Path file = absolutize("file");
+    FileSystemUtils.createEmptyFile(file);
+
+    file.setLastModifiedTime(1L << 34);
+    assertThat(file.getLastModifiedTime()).isEqualTo(1L << 34);
+  }
+
+  @Test
+  public void testSetLastModifiedTimeWithSentinel() throws Exception {
+    Path file = absolutize("file");
+    FileSystemUtils.createEmptyFile(file);
+
+    // To avoid sleeping, first set the modification time to the past.
+    long pastTime = Instant.now().minusSeconds(1).toEpochMilli();
+    file.setLastModifiedTime(pastTime);
+
+    // Even if we get the system time before the setLastModifiedTime call, getLastModifiedTime may
+    // return a time which is slightly behind. Simply check that it's greater than the past time.
+    file.setLastModifiedTime(Path.NOW_SENTINEL_TIME);
+    assertThat(file.getLastModifiedTime()).isGreaterThan(pastTime);
+  }
+
   @Test
   public void testCreateFileChangesTimeOfDirectory() throws Exception {
     storeReferenceTime(workingDir.getLastModifiedTime());
@@ -1275,20 +1276,6 @@ public abstract class FileSystemTest {
   }
 
   @Test
-  public void testFileChannelEOF() throws Exception {
-    try (OutputStream outStream = xFile.getOutputStream()) {
-      outStream.write(new byte[] {1});
-    }
-
-    try (ReadableByteChannel channel = xFile.createReadableByteChannel()) {
-      ByteBuffer buffer = ByteBuffer.allocate(2);
-      int numRead = readFromChannel(channel, buffer, 1);
-      assertThat(numRead).isEqualTo(1);
-      assertThat(readFromChannel(channel, buffer, 1)).isEqualTo(-1);
-    }
-  }
-
-  @Test
   public void testInputAndOutputStream() throws Exception {
     try (OutputStream outStream = xFile.getOutputStream()) {
       for (int i = 33; i < 126; i++) {
@@ -1305,19 +1292,17 @@ public abstract class FileSystemTest {
   }
 
   @Test
-  public void testFileChannel() throws Exception {
-    byte[] bytes = "abcdefghijklmnoprstuvwxyz".getBytes(StandardCharsets.ISO_8859_1);
-    try (OutputStream outStream = xFile.getOutputStream()) {
-      outStream.write(bytes);
-    }
+  public void testInputStreamPermissionError() throws Exception {
+    assertThat(xFile.exists()).isTrue();
+    xFile.setReadable(false);
+    assertThrows(FileAccessException.class, () -> xFile.getInputStream());
+  }
 
-    try (ReadableByteChannel channel = xFile.createReadableByteChannel()) {
-      ByteBuffer buffer = ByteBuffer.allocate(bytes.length);
-      int numRead = readFromChannel(channel, buffer, bytes.length);
-      assertThat(numRead).isEqualTo(bytes.length);
-      assertThat(buffer.hasArray()).isTrue();
-      assertThat(buffer.array()).isEqualTo(bytes);
-    }
+  @Test
+  public void testOutputStreamPermissionError() throws Exception {
+    assertThat(xFile.exists()).isTrue();
+    xFile.setWritable(false);
+    assertThrows(FileAccessException.class, () -> xFile.getOutputStream());
   }
 
   @Test
@@ -1325,6 +1310,7 @@ public abstract class FileSystemTest {
       throws Exception {
     String text = "hello";
     Path file = overwrite ? xFile : xNothing;
+    FileSystemUtils.writeContent(xFile, UTF_8, "goodbye"); // longer than hello
     try (SeekableByteChannel channel = file.createReadWriteByteChannel()) {
       writeToChannelAsLatin1(channel, text);
       assertThat(channel.position()).isEqualTo(text.length());
@@ -1346,16 +1332,99 @@ public abstract class FileSystemTest {
   }
 
   @Test
-  public void testCreateReadWriteByteChannelRead(@TestParameter({"0", "5", "12"}) int seekPosition)
+  public void testCreateReadWriteByteChannelSeek(@TestParameter({"0", "5", "12"}) int seekPosition)
       throws Exception {
     String text = "hello there!";
     try (SeekableByteChannel channel = xNothing.createReadWriteByteChannel()) {
       writeToChannelAsLatin1(channel, text);
       channel.position(seekPosition);
-
+      assertThat(channel.position()).isEqualTo(seekPosition);
       String read = readAllAsString(channel, text.length() - seekPosition);
       assertThat(channel.position()).isEqualTo(text.length());
       assertThat(read).isEqualTo(text.substring(seekPosition));
+    }
+  }
+
+  @Test
+  public void testCreateReadWriteByteChannelSeekHole(@TestParameter boolean write)
+      throws Exception {
+    String text1 = "goodbye";
+    String text2 = "and thanks for all the fish";
+    try (SeekableByteChannel channel = xNothing.createReadWriteByteChannel()) {
+      writeToChannelAsLatin1(channel, text1);
+      channel.position(text1.length() + 1);
+      assertThat(channel.position()).isEqualTo(text1.length() + 1);
+      assertThat(channel.size()).isEqualTo(text1.length());
+      assertThat(channel.read(ByteBuffer.allocate(1))).isEqualTo(-1);
+      if (write) {
+        writeToChannelAsLatin1(channel, text2);
+        assertThat(channel.position()).isEqualTo(text1.length() + 1 + text2.length());
+      }
+    }
+
+    assertThat(FileSystemUtils.readContent(xNothing, ISO_8859_1))
+        .isEqualTo(write ? text1 + "\0" + text2 : text1);
+  }
+
+  @Test
+  public void testCreateReadWriteByteChannelSeekNegative() throws Exception {
+    try (SeekableByteChannel channel = xNothing.createReadWriteByteChannel()) {
+      assertThrows(IllegalArgumentException.class, () -> channel.position(-1));
+    }
+  }
+
+  @Test
+  public void testCreateReadWriteByteChannelTruncate(
+      @TestParameter({"0", "5", "12", "100"}) int truncateSize) throws Exception {
+    String text = "hello there!";
+    int expectedSize = min(truncateSize, text.length());
+    try (SeekableByteChannel channel = xNothing.createReadWriteByteChannel()) {
+      writeToChannelAsLatin1(channel, text);
+      channel.truncate(truncateSize);
+      assertThat(channel.position()).isEqualTo(expectedSize);
+      assertThat(channel.size()).isEqualTo(expectedSize);
+      assertThat(channel.read(ByteBuffer.allocate(1))).isEqualTo(-1);
+    }
+
+    assertThat(FileSystemUtils.readContent(xNothing, ISO_8859_1))
+        .isEqualTo(text.substring(0, expectedSize));
+  }
+
+  @Test
+  public void testCreateReadWriteByteChannelTruncateHole(@TestParameter boolean shrink)
+      throws Exception {
+    String text = "hello";
+    try (SeekableByteChannel channel = xNothing.createReadWriteByteChannel()) {
+      writeToChannelAsLatin1(channel, text);
+      channel.position(text.length() + 5);
+      assertThat(channel.position()).isEqualTo(text.length() + 5);
+      assertThat(channel.size()).isEqualTo(text.length());
+      int truncateSize = shrink ? text.length() - 1 : text.length() + 1;
+      channel.truncate(truncateSize);
+      assertThat(channel.position()).isEqualTo(truncateSize);
+      assertThat(channel.size()).isEqualTo(shrink ? text.length() - 1 : text.length());
+    }
+
+    assertThat(FileSystemUtils.readContent(xNothing, ISO_8859_1))
+        .isEqualTo(shrink ? "hell" : "hello");
+  }
+
+  @Test
+  public void testCreateReadWriteByteChannelTruncateAndSeekToErase() throws Exception {
+    try (SeekableByteChannel channel = xNothing.createReadWriteByteChannel()) {
+      writeToChannelAsLatin1(channel, "hello");
+      channel.truncate("hello".length() - 1);
+      channel.position("hello".length());
+      writeToChannelAsLatin1(channel, "world");
+    }
+
+    assertThat(FileSystemUtils.readContent(xNothing, ISO_8859_1)).isEqualTo("hell\0world");
+  }
+
+  @Test
+  public void testCreateReadWriteByteChannelTruncateNegative() throws Exception {
+    try (SeekableByteChannel channel = xNothing.createReadWriteByteChannel()) {
+      assertThrows(IllegalArgumentException.class, () -> channel.truncate(-1));
     }
   }
 
@@ -1386,22 +1455,6 @@ public abstract class FileSystemTest {
       totalRead += read;
       assertThat(buffer.position()).isEqualTo(totalRead);
     }
-  }
-
-  private static int readFromChannel(ReadableByteChannel channel, ByteBuffer buffer, int expected)
-      throws IOException {
-    int numRead = 0;
-    for (int i = 0; i < 100; i++) {
-      int stepRead = channel.read(buffer);
-      if (stepRead < 0) {
-        return stepRead;
-      }
-      numRead += stepRead;
-      if (numRead >= expected) {
-        return numRead;
-      }
-    }
-    throw new IOException("Can not read the specified number of bytes.");
   }
 
   @Test
@@ -1438,6 +1491,17 @@ public abstract class FileSystemTest {
     try (InputStream inStream = xFile.getInputStream()) {
       assertThat(inStream.read()).isEqualTo(-1);
     }
+  }
+
+  @Test
+  public void testOutputStreamConcurrentAppend() throws Exception {
+    try (OutputStream s1 = xFile.getOutputStream(true);
+        OutputStream s2 = xFile.getOutputStream(true)) {
+      s1.write("hello".getBytes(UTF_8));
+      s2.write("world".getBytes(UTF_8));
+    }
+
+    assertThat(FileSystemUtils.readContent(xFile, UTF_8)).isEqualTo("helloworld");
   }
 
   @Test
@@ -1754,29 +1818,68 @@ public abstract class FileSystemTest {
 
   @Test
   public void testResolveSymlinks() throws Exception {
-    if (testFS.supportsSymbolicLinksNatively(xLink.asFragment())) {
-      createSymbolicLink(xLink, xFile);
-      FileSystemUtils.createEmptyFile(xFile);
-      assertThat(testFS.resolveOneLink(xLink.asFragment())).isEqualTo(xFile.asFragment());
-      assertThat(xLink.resolveSymbolicLinks()).isEqualTo(xFile);
-    }
+    assumeTrue(testFS.supportsSymbolicLinksNatively(xLink.asFragment()));
+
+    createSymbolicLink(xLink, xFile);
+    FileSystemUtils.createEmptyFile(xFile);
+    assertThat(testFS.resolveOneLink(xLink.asFragment())).isEqualTo(xFile.asFragment());
+    assertThat(xLink.resolveSymbolicLinks()).isEqualTo(xFile);
   }
 
   @Test
   public void testResolveDanglingSymlinks() throws Exception {
-    if (testFS.supportsSymbolicLinksNatively(xLink.asFragment())) {
-      createSymbolicLink(xLink, xNothing);
-      assertThat(testFS.resolveOneLink(xLink.asFragment())).isEqualTo(xNothing.asFragment());
-      assertThrows(IOException.class, () -> xLink.resolveSymbolicLinks());
-    }
+    assumeTrue(testFS.supportsSymbolicLinksNatively(xLink.asFragment()));
+
+    createSymbolicLink(xLink, xNothing);
+    assertThat(testFS.resolveOneLink(xLink.asFragment())).isEqualTo(xNothing.asFragment());
+    assertThrows(IOException.class, () -> xLink.resolveSymbolicLinks());
   }
 
   @Test
   public void testResolveNonSymlinks() throws Exception {
-    if (testFS.supportsSymbolicLinksNatively(xFile.asFragment())) {
-      assertThat(testFS.resolveOneLink(xFile.asFragment())).isNull();
-      assertThat(xFile.resolveSymbolicLinks()).isEqualTo(xFile);
-    }
+    assertThat(testFS.resolveOneLink(xFile.asFragment())).isNull();
+    assertThat(xFile.resolveSymbolicLinks()).isEqualTo(xFile);
+  }
+
+  @Test
+  public void testReaddir() throws Exception {
+    Path dir = workingDir.getChild("readdir");
+
+    assumeTrue(testFS.supportsSymbolicLinksNatively(dir.asFragment()));
+
+    dir.getChild("dir").createDirectoryAndParents();
+    FileSystemUtils.createEmptyFile(dir.getChild("file"));
+    dir.getChild("file_link").createSymbolicLink(dir.getChild("file"));
+    dir.getChild("dir_link").createSymbolicLink(dir.getChild("dir"));
+    dir.getChild("looping_link").createSymbolicLink(dir.getChild("looping_link"));
+    dir.getChild("dangling_link").createSymbolicLink(testFS.getPath("/does_not_exist"));
+
+    assertThat(dir.getDirectoryEntries())
+        .containsExactly(
+            dir.getChild("file"),
+            dir.getChild("dir"),
+            dir.getChild("file_link"),
+            dir.getChild("dir_link"),
+            dir.getChild("looping_link"),
+            dir.getChild("dangling_link"));
+
+    assertThat(dir.readdir(Symlinks.NOFOLLOW))
+        .containsExactly(
+            new Dirent("file", Dirent.Type.FILE),
+            new Dirent("dir", Dirent.Type.DIRECTORY),
+            new Dirent("file_link", Dirent.Type.SYMLINK),
+            new Dirent("dir_link", Dirent.Type.SYMLINK),
+            new Dirent("looping_link", Dirent.Type.SYMLINK),
+            new Dirent("dangling_link", Dirent.Type.SYMLINK));
+
+    assertThat(dir.readdir(Symlinks.FOLLOW))
+        .containsExactly(
+            new Dirent("file", Dirent.Type.FILE),
+            new Dirent("dir", Dirent.Type.DIRECTORY),
+            new Dirent("file_link", Dirent.Type.FILE),
+            new Dirent("dir_link", Dirent.Type.DIRECTORY),
+            new Dirent("looping_link", Dirent.Type.UNKNOWN),
+            new Dirent("dangling_link", Dirent.Type.UNKNOWN));
   }
 
   @Test
@@ -1849,5 +1952,87 @@ public abstract class FileSystemTest {
   protected boolean isHardLinked(Path a, Path b) throws IOException {
     return testFS.stat(a.asFragment(), false).getNodeId()
         == testFS.stat(b.asFragment(), false).getNodeId();
+  }
+
+  @Test
+  public void testGetNioPath_basic() {
+    java.nio.file.Path javaPath = getJavaPathOrSkipIfUnsupported(xFile);
+    assertThat(Files.isRegularFile(javaPath)).isTrue();
+  }
+
+  @Test
+  public void testGetNioPath_externalUtf8() throws IOException {
+    assumeUtf8CompatibleEncoding();
+
+    // Simulates a Starlark string constant, which is read from a presumably UTF-8 encoded source
+    // file into Bazel's internal representation.
+    Path utf8File = absolutize(StringEncoding.unicodeToInternal("some_dir/入力_A_🌱.txt"));
+    utf8File.getParentDirectory().createDirectoryAndParents();
+    FileSystemUtils.writeContent(utf8File, UTF_8, "hello 入力_A_🌱");
+
+    java.nio.file.Path javaPath = getJavaPathOrSkipIfUnsupported(utf8File);
+    assertThat(Files.isRegularFile(javaPath)).isTrue();
+    assertThat(Files.readString(javaPath)).isEqualTo("hello 入力_A_🌱");
+
+    // Ensure that the view of the file as a directory entry is consistent with how it was created.
+    assertThat(utf8File.getParentDirectory().getDirectoryEntries()).containsExactly(utf8File);
+  }
+
+  @Test
+  public void testGetNioPath_internalUtf8() throws IOException {
+    assumeUtf8CompatibleEncoding();
+
+    Path dirPath = absolutize("some_dir");
+    dirPath.createDirectoryAndParents();
+
+    // Create a file through Java APIs.
+    java.nio.file.Path javaDirPath = getJavaPathOrSkipIfUnsupported(dirPath);
+    Files.writeString(javaDirPath.resolve(unicodeToPlatform("入力_A_🌱.txt")), "hello 入力_A_🌱");
+
+    // Retrieve its path through the filesystem API.
+    var entries = dirPath.getDirectoryEntries();
+    assertThat(entries).hasSize(1);
+    var filePath = Iterables.getOnlyElement(entries);
+    assertThat(filePath.exists()).isTrue();
+
+    // Verify the file content through the Java APIs.
+    var javaFilePath = getJavaPathOrSkipIfUnsupported(filePath);
+    assertThat(Files.isRegularFile(javaFilePath)).isTrue();
+    assertThat(Files.readString(javaFilePath)).isEqualTo("hello 入力_A_🌱");
+  }
+
+  protected java.nio.file.Path getJavaPathOrSkipIfUnsupported(Path path) {
+    java.nio.file.Path javaPath = null;
+    try {
+      javaPath = testFS.getNioPath(path.asFragment());
+    } catch (UnsupportedOperationException e) {
+      // Intentionally ignored.
+    }
+
+    File javaFile = null;
+    try {
+      javaFile = testFS.getIoFile(path.asFragment());
+    } catch (UnsupportedOperationException e) {
+      // Intentionally ignored.
+    }
+
+    assertThat(javaPath == null).isEqualTo(javaFile == null);
+    assumeTrue(javaPath != null && javaFile != null);
+    assertThat(javaFile.toPath()).isEqualTo(javaPath);
+
+    return javaPath;
+  }
+
+  protected static String unicodeToPlatform(String s) {
+    return StringEncoding.internalToPlatform(StringEncoding.unicodeToInternal(s));
+  }
+
+  protected static String platformToUnicode(String s) {
+    return StringEncoding.internalToUnicode(StringEncoding.platformToInternal(s));
+  }
+
+  protected static void assumeUtf8CompatibleEncoding() {
+    Charset sunJnuEncoding = Charset.forName(System.getProperty("sun.jnu.encoding"));
+    assume().that(ImmutableList.of(UTF_8, ISO_8859_1)).contains(sunJnuEncoding);
   }
 }

@@ -24,6 +24,7 @@ import com.google.devtools.build.lib.query2.engine.QueryEnvironment.Setting;
 import com.google.devtools.build.lib.query2.engine.QueryException;
 import com.google.devtools.build.lib.query2.testutil.AbstractQueryTest.QueryHelper.ResultAndTargets;
 import com.google.devtools.build.lib.server.FailureDetails.PackageLoading.Code;
+import com.google.devtools.build.lib.server.FailureDetails.Query;
 import com.google.devtools.build.lib.testutil.TestConstants;
 import com.google.devtools.build.lib.util.ExitCode;
 import java.util.Set;
@@ -98,32 +99,77 @@ public abstract class AbstractQueryKeepGoingTest extends QueryTest {
   public void testErrorWhenResultContainsLabelsCrossingSubpackage() throws Exception {
     writeFile(
         "pear/BUILD",
-        "sh_library(name='plum/peach', srcs=['peach.sh'])",
-        "sh_library(name='apple', srcs=['apple.sh'])");
+        """
+        load('//test_defs:foo_library.bzl', 'foo_library')
+        foo_library(
+            name = "plum/peach",
+            srcs = ["peach.sh"],
+        )
+
+        foo_library(
+            name = "apple",
+            srcs = ["apple.sh"],
+        )
+        """);
     writeFile("pear/plum/BUILD");
 
-    assertPackageLoadingCode(evalFail("//pear:apple"), Code.LABEL_CROSSES_PACKAGE_BOUNDARY);
+    ResultAndTargets<Target> resultAndTargets = evalFail("//pear:apple");
     assertContainsEvent("is invalid because 'pear/plum' is a subpackage");
+    if (helper.reportsUniverseEvaluationErrors()) {
+      assertPackageLoadingCode(resultAndTargets, Code.LABEL_CROSSES_PACKAGE_BOUNDARY);
+    } else {
+      assertQueryCode(
+          resultAndTargets.getQueryEvalResult().getDetailedExitCode().getFailureDetail(),
+          Query.Code.BUILD_FILE_ERROR);
+    }
   }
 
   @Test
   public void testErrorWhenWildcardResultContainsLabelsCrossingSubpackage() throws Exception {
     writeFile(
         "pear/BUILD",
-        "sh_library(name='plum/peach', srcs=['peach.sh'])",
-        "sh_library(name='apple', srcs=['apple.sh'])");
+        """
+        load('//test_defs:foo_library.bzl', 'foo_library')
+        foo_library(
+            name = "plum/peach",
+            srcs = ["peach.sh"],
+        )
+
+        foo_library(
+            name = "apple",
+            srcs = ["apple.sh"],
+        )
+        """);
     writeFile("pear/plum/BUILD");
 
-    assertPackageLoadingCode(evalFail("//pear:all"), Code.LABEL_CROSSES_PACKAGE_BOUNDARY);
+    ResultAndTargets<Target> resultAndTargets = evalFail("//pear:all");
     assertContainsEvent("is invalid because 'pear/plum' is a subpackage");
+    if (helper.reportsUniverseEvaluationErrors()) {
+      assertPackageLoadingCode(resultAndTargets, Code.LABEL_CROSSES_PACKAGE_BOUNDARY);
+    } else {
+      assertQueryCode(
+          resultAndTargets.getQueryEvalResult().getDetailedExitCode().getFailureDetail(),
+          Query.Code.BUILD_FILE_ERROR);
+    }
   }
 
   @Override
   protected void writeBuildFiles3() throws Exception {
     writeFile(
         "a/BUILD",
-        "genrule(name='a', srcs=['//b', '//c'], outs=['out'], cmd=':')",
-        "exports_files(['a2'])");
+        """
+        genrule(
+            name = "a",
+            srcs = [
+                "//b",
+                "//c",
+            ],
+            outs = ["out"],
+            cmd = ":",
+        )
+
+        exports_files(["a2"])
+        """);
     writeFile("b/BUILD", "genrule(name='b', srcs=['//d'], outs=['out'], cmd=':')");
     writeFile("c/BUILD", "genrule(name='c', srcs=['//d'], outs=['out'], cmd=':')");
     writeFile("d/BUILD", "exports_files(['d'])");
@@ -133,8 +179,12 @@ public abstract class AbstractQueryKeepGoingTest extends QueryTest {
       String errorMsg, boolean checkFailureDetail, String keepGoingErrorMsg) throws Exception {
     writeFile(
         "missingdep/BUILD",
-        "cc_library(name = 'missingdep',",
-        "           deps = [ '//i/do/not/exist'])");
+        """
+        cc_library(
+            name = "missingdep",
+            deps = ["//i/do/not/exist"],
+        )
+        """);
 
     helper.setKeepGoing(false);
     EvalThrowsResult throwsResult1 = evalThrows("deps(//missingdep)", false);
@@ -184,7 +234,13 @@ public abstract class AbstractQueryKeepGoingTest extends QueryTest {
   public void testBadBuildFileKeepGoing() throws Exception {
     writeFile("bad/BUILD", "blah blah blah");
     ResultAndTargets<Target> result = evalFail("bad:*");
-    assertPackageLoadingCode(result, Code.SYNTAX_ERROR);
+    if (helper.reportsUniverseEvaluationErrors()) {
+      assertPackageLoadingCode(result, Code.SYNTAX_ERROR);
+    } else {
+      assertQueryCode(
+          result.getQueryEvalResult().getDetailedExitCode().getFailureDetail(),
+          Query.Code.BUILD_FILE_ERROR);
+    }
     assertContainsEvent("syntax error at 'blah'");
     assertContainsEvent("--keep_going specified, ignoring errors. Results may be inaccurate");
 
@@ -204,10 +260,14 @@ public abstract class AbstractQueryKeepGoingTest extends QueryTest {
   @Test
   public void testQueryAllForBrokenPackage() throws Exception {
     writeFile(
-        "x/BUILD", //
-        "filegroup(name = 'a')",
-        "x = 1 // 0",
-        "filegroup(name = 'c')" // not executed
+        "x/BUILD",
+        """
+        filegroup(name = "a")
+
+        x = 1 // 0
+
+        filegroup(name = "c")
+        """ // not executed
         );
     assertThat(evalFail("//x:all").getResultSet()).hasSize(1);
     assertContainsEvent("division by zero");
@@ -217,10 +277,14 @@ public abstract class AbstractQueryKeepGoingTest extends QueryTest {
   @Test
   public void testQueryDotDotDotForBrokenPackage() throws Exception {
     writeFile(
-        "x/BUILD", //
-        "filegroup(name = 'a')",
-        "x = 1 // 0",
-        "filegroup(name = 'c')" // not executed
+        "x/BUILD",
+        """
+        filegroup(name = "a")
+
+        x = 1 // 0
+
+        filegroup(name = "c")
+        """ // not executed
         );
     assertThat(evalFail("//x/...").getResultSet()).hasSize(1);
     assertContainsEvent("division by zero");
@@ -260,23 +324,36 @@ public abstract class AbstractQueryKeepGoingTest extends QueryTest {
 
   private void runTestErrorReportedWhenStarlarkLoadRefersToMissingPkgExistingFile(
       String queryExpression, int numExpectedTargets) throws Exception {
+    if (helper.reportsUniverseEvaluationErrors()) {
+      // This family of test cases are interesting only for query environments that don't report
+      // universe evaluation errors. This way we can assert that any error message came from query
+      // evaluation.
+      return;
+    }
+
     // Starlark imports must refer to files in packages. When the file being imported exists, but
     // it has no containing package, an error should be reported for queries that involve the
     // package containing that import.
 
-    // This ensures that any error message must come from query evaluation, not universe evaluation
-    // (in the case of SkyQueryEnvironment).
-    helper.setBlockUniverseEvaluationErrors(true);
-
     // The package "//foo" can be loaded and has no errors.
-    writeFile("foo/BUILD", "sh_library(name='apple', srcs=['apple.sh'])");
+    writeFile(
+        "foo/BUILD",
+        "load('//test_defs:foo_library.bzl', 'foo_library')",
+        "foo_library(name='apple', srcs=['apple.sh'])");
 
     // The package "//foo/foo" has a load statement that fails. Its ":banana" target does not depend
     // on the load, but because the package failed to load, it does not exist.
     writeFile(
         "foo/foo/BUILD",
-        "load('//bar:lib.bzl', 'myfunc')",
-        "sh_library(name='banana', srcs=['banana.sh'])");
+        """
+        load("//bar:lib.bzl", "myfunc")
+        load('//test_defs:foo_library.bzl', 'foo_library')
+
+        foo_library(
+            name = "banana",
+            srcs = ["banana.sh"],
+        )
+        """);
 
     // This Starlark file is fine, but it has no containing package, so it can't be loaded.
     writeFile("bar/lib.bzl", "custom_rule(name = 'myfunc')");
@@ -298,19 +375,34 @@ public abstract class AbstractQueryKeepGoingTest extends QueryTest {
     // packages in error, testing that each packages' error is reported.
 
     // The package "//foo" can be loaded and has no errors.
-    writeFile("foo/BUILD", "sh_library(name='apple', srcs=['apple.sh'])");
+    writeFile(
+        "foo/BUILD",
+        "load('//test_defs:foo_library.bzl', 'foo_library')",
+        "foo_library(name='apple', srcs=['apple.sh'])");
 
     // The packages "//foo/foo" and "//foo/foo2" each have a load statement that fails. The
     // ":banana" targets do not depend on the load, but because the packages failed to load, they do
     // not exist.
     writeFile(
         "foo/foo/BUILD",
-        "load('//bar:lib.bzl', 'myfunc')",
-        "sh_library(name='banana', srcs=['banana.sh'])");
+        """
+        load("//bar:lib.bzl", "myfunc")
+        load('//test_defs:foo_library.bzl', 'foo_library')
+        foo_library(
+            name = "banana",
+            srcs = ["banana.sh"],
+        )
+        """);
     writeFile(
         "foo/foo2/BUILD",
-        "load('//bar:lib.bzl', 'myfunc')",
-        "sh_library(name='banana', srcs=['banana.sh'])");
+        """
+        load("//bar:lib.bzl", "myfunc")
+        load('//test_defs:foo_library.bzl', 'foo_library')
+        foo_library(
+            name = "banana",
+            srcs = ["banana.sh"],
+        )
+        """);
 
     // This Starlark file is fine, but it has no containing package, so it can't be loaded.
     writeFile("bar/lib.bzl", "custom_rule(name = 'myfunc')");
@@ -360,22 +452,34 @@ public abstract class AbstractQueryKeepGoingTest extends QueryTest {
 
   private void runTestErrorReportedWhenStarlarkLoadRefersToExistingPkgMissingFile(
       String queryExpression, int numExpectedTargets) throws Exception {
+    if (helper.reportsUniverseEvaluationErrors()) {
+      // This family of test cases are interesting only for query environments that don't report
+      // universe evaluation errors. This way we can assert that any error message came from query
+      // evaluation.
+      return;
+    }
+
     // Starlark imports must refer to files that exist, otherwise they will fail and an error should
     // be reported. How shocking!
 
-    // This ensures that any error message must come from query evaluation, not universe evaluation
-    // (in the case of SkyQueryEnvironment).
-    helper.setBlockUniverseEvaluationErrors(true);
-
     // The package "//foo" can be loaded and has no errors.
-    writeFile("foo/BUILD", "sh_library(name='apple', srcs=['apple.sh'])");
+    writeFile(
+        "foo/BUILD",
+        "load('//test_defs:foo_library.bzl', 'foo_library')",
+        "foo_library(name='apple', srcs=['apple.sh'])");
 
     // The package "//foo/foo" has a load statement that fails. Its ":banana" target does not depend
     // on the load, but because the package failed to load, it does not exist.
     writeFile(
         "foo/foo/BUILD",
-        "load('//bar:lib.bzl', 'myfunc')",
-        "sh_library(name='banana', srcs=['banana.sh'])");
+        """
+        load("//bar:lib.bzl", "myfunc")
+        load('//test_defs:foo_library.bzl', 'foo_library')
+        foo_library(
+            name = "banana",
+            srcs = ["banana.sh"],
+        )
+        """);
 
     // The load statement in "//foo/foo" refers to an existing package, but the Starlark file is
     // missing.
@@ -410,22 +514,34 @@ public abstract class AbstractQueryKeepGoingTest extends QueryTest {
 
   private void runTestErrorReportedWhenStarlarkLoadRefersToFileInSymlinkCycle(
       String queryExpression, int numExpectedTargets) throws Exception {
+    if (helper.reportsUniverseEvaluationErrors()) {
+      // This family of test cases are interesting only for query environments that don't report
+      // universe evaluation errors. This way we can assert that any error message came from query
+      // evaluation.
+      return;
+    }
+
     // Starlark imports must refer to files that don't point into a symlink cycle, otherwise they
     // will fail and an error should be reported. Quite astonishing!
 
-    // This ensures that any error message must come from query evaluation, not universe evaluation
-    // (in the case of SkyQueryEnvironment).
-    helper.setBlockUniverseEvaluationErrors(true);
-
     // The package "//foo" can be loaded and has no errors.
-    writeFile("foo/BUILD", "sh_library(name='apple', srcs=['apple.sh'])");
+    writeFile(
+        "foo/BUILD",
+        "load('//test_defs:foo_library.bzl', 'foo_library')",
+        "foo_library(name='apple', srcs=['apple.sh'])");
 
     // The package "//foo/foo" has a load statement that fails. Its ":banana" target does not depend
     // on the load, but because the package failed to load, it does not exist.
     writeFile(
         "foo/foo/BUILD",
-        "load('//bar:lib.bzl', 'myfunc')",
-        "sh_library(name='banana', srcs=['banana.sh'])");
+        """
+        load("//bar:lib.bzl", "myfunc")
+        load('//test_defs:foo_library.bzl', 'foo_library')
+        foo_library(
+            name = "banana",
+            srcs = ["banana.sh"],
+        )
+        """);
 
     // The load statement in "//foo/foo" refers to an existing package, but the Starlark file the
     // load statement refers to points into a symlink cycle.
@@ -443,29 +559,31 @@ public abstract class AbstractQueryKeepGoingTest extends QueryTest {
 
   @Test
   public void testNoErrorReportedWhenUniverseIncludesBrokenPkgButQueryDoesNot() throws Exception {
-    // The SkyQueryEnvironment implementation can emit errors from two sources: graph evaluation
-    // to prepare the query's universe scope, and query evaluation (which includes things like
-    // reading packages out of the graph). Whether the SkyQueryEnvironment emits errors during graph
-    // evaluation of the universe is controlled by the blockUniverseEvaluationErrors parameter (on
-    // QueryEnvironmentFactory#create and so on).
-    //
-    // The BlazeQueryEnvironment implementation never emits errors during universe evaluation,
-    // because it doesn't *do* universe evaluation. Its graph evaluation is limited to evaluating
-    // the target patterns that appear in the query expression.
-    //
-    // This test asserts that, when told to block errors that only occur during universe evaluation,
-    // neither QueryEnvironment implementation reports them.
-    helper.setBlockUniverseEvaluationErrors(true);
+    if (helper.reportsUniverseEvaluationErrors()) {
+      // This test case is interesting only for query environments that don't report universe
+      // evaluation errors. This way we can assert that any error message came from query
+      // evaluation.
+      return;
+    }
 
     // The package "//foo" is healthy.
-    writeFile("foo/BUILD", "sh_library(name='apple', srcs=['apple.sh'])");
+    writeFile(
+        "foo/BUILD",
+        "load('//test_defs:foo_library.bzl', 'foo_library')",
+        "foo_library(name='apple', srcs=['apple.sh'])");
 
     // The package "//baz" is not healthy: it contains a load statement referring to an unpackaged
     // Starlark file.
     writeFile(
         "baz/BUILD",
-        "load('//bar:lib.bzl', 'myfunc')",
-        "sh_library(name='banana', srcs=['banana.sh'])");
+        """
+        load("//bar:lib.bzl", "myfunc")
+        load('//test_defs:foo_library.bzl', 'foo_library')
+        foo_library(
+            name = "banana",
+            srcs = ["banana.sh"],
+        )
+        """);
     writeFile("bar/lib.bzl", "custom_rule(name = 'myfunc')");
 
     // Nevertheless, a query affecting just the healthy package emits no errors.
@@ -478,8 +596,18 @@ public abstract class AbstractQueryKeepGoingTest extends QueryTest {
   public void boundedRdepsWithError() throws Exception {
     writeFile(
         "foo/BUILD",
-        "sh_library(name = 'foo', deps = [':dep'])",
-        "sh_library(name = 'dep', deps = ['//bar:missing'])");
+        """
+        load('//test_defs:foo_library.bzl', 'foo_library')
+        foo_library(
+            name = "foo",
+            deps = [":dep"],
+        )
+
+        foo_library(
+            name = "dep",
+            deps = ["//bar:missing"],
+        )
+        """);
     ResultAndTargets<Target> targetResultAndTargets = evalFail("rdeps(//foo:foo, //foo:dep, 1)");
     assertThat(
             targetResultAndTargets.getResultSet().stream()
@@ -494,8 +622,8 @@ public abstract class AbstractQueryKeepGoingTest extends QueryTest {
   }
 
   @Test
-  public void testIgnoredPackagePrefixIsTBDQuery() throws Exception {
-    writeFile(helper.getIgnoredPackagePrefixesFile().getPathString(), "a/b");
+  public void testIgnoredSubdirectoryIsTBDQuery() throws Exception {
+    overwriteFile(helper.getIgnoredSubdirectoriesFile().getPathString(), "a/b");
     writeFile("a/BUILD", "filegroup(name = 'a')");
     writeFile("a/b/BUILD", "filegroup(name = 'a_b')");
     writeFile("a/b/c/BUILD", "filegroup(name = 'a_b_c')");
@@ -515,10 +643,25 @@ public abstract class AbstractQueryKeepGoingTest extends QueryTest {
   public void bogusVisibility() throws Exception {
     writeFile(
         "foo/BUILD",
-        "package(default_visibility = ['//visibility:public'])",
-        "sh_library(name = 'a', visibility = ['//bar:__pkg__', '//bad:visibility'])",
-        "sh_library(name = 'b')",
-        "sh_library(name = 'c', visibility = ['//bad:visibility'])");
+        """
+        load('//test_defs:foo_library.bzl', 'foo_library')
+        package(default_visibility = ["//visibility:public"])
+
+        foo_library(
+            name = "a",
+            visibility = [
+                "//bad:visibility",
+                "//bar:__pkg__",
+            ],
+        )
+
+        foo_library(name = "b")
+
+        foo_library(
+            name = "c",
+            visibility = ["//bad:visibility"],
+        )
+        """);
     writeFile("bar/BUILD");
     ResultAndTargets<Target> resultAndTargets =
         helper.evaluateQuery("visible(//bar:BUILD, //foo:all)");

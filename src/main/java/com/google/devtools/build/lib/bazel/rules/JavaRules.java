@@ -19,8 +19,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.analysis.BaseRuleClasses;
 import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
 import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider.RuleSet;
-import com.google.devtools.build.lib.bazel.rules.java.BazelJavaBinaryRule;
-import com.google.devtools.build.lib.bazel.rules.java.BazelJavaRuleClasses;
 import com.google.devtools.build.lib.bazel.rules.java.BazelJavaSemantics;
 import com.google.devtools.build.lib.rules.core.CoreRules;
 import com.google.devtools.build.lib.rules.extra.ActionListenerRule;
@@ -30,7 +28,6 @@ import com.google.devtools.build.lib.rules.java.JavaPluginsFlagAliasRule;
 import com.google.devtools.build.lib.rules.java.JavaRuleClasses.JavaRuntimeBaseRule;
 import com.google.devtools.build.lib.rules.java.JavaRuleClasses.JavaToolchainBaseRule;
 import com.google.devtools.build.lib.rules.java.JavaStarlarkCommon;
-import com.google.devtools.build.lib.rules.java.ProguardLibraryRule;
 import com.google.devtools.build.lib.rules.java.ProguardSpecProvider;
 import com.google.devtools.build.lib.starlarkbuildapi.java.JavaBootstrap;
 import com.google.devtools.build.lib.util.ResourceFileLoader;
@@ -50,20 +47,25 @@ public class JavaRules implements RuleSet {
   public void init(ConfiguredRuleClassProvider.Builder builder) {
     builder.addConfigurationFragment(JavaConfiguration.class);
 
-    builder.addRuleDefinition(new BazelJavaRuleClasses.BaseJavaBinaryRule());
     builder.addRuleDefinition(new JavaToolchainBaseRule());
     builder.addRuleDefinition(new JavaRuntimeBaseRule());
-    builder.addRuleDefinition(new BazelJavaRuleClasses.JavaBaseRule());
-    builder.addRuleDefinition(new ProguardLibraryRule());
-    builder.addRuleDefinition(new BazelJavaRuleClasses.JavaRule());
-    builder.addRuleDefinition(new BazelJavaBinaryRule());
-    builder.addRuleDefinition(new BaseRuleClasses.EmptyRule("java_library") {});
-    builder.addRuleDefinition(new BaseRuleClasses.EmptyRule("java_import") {});
-    builder.addRuleDefinition(new BaseRuleClasses.EmptyRule("java_test") {});
-    builder.addRuleDefinition(new BaseRuleClasses.EmptyRule("java_plugin") {});
-    builder.addRuleDefinition(new BaseRuleClasses.EmptyRule("java_toolchain") {});
-    builder.addRuleDefinition(new BaseRuleClasses.EmptyRule("java_package_configuration") {});
-    builder.addRuleDefinition(new BaseRuleClasses.EmptyRule("java_runtime") {});
+    builder.addRuleDefinition(
+        new BaseRuleClasses.EmptyRule("java_binary", coreBzlLabel("java_binary")) {});
+    builder.addRuleDefinition(
+        new BaseRuleClasses.EmptyRule("java_library", coreBzlLabel("java_library")) {});
+    builder.addRuleDefinition(
+        new BaseRuleClasses.EmptyRule("java_import", coreBzlLabel("java_import")) {});
+    builder.addRuleDefinition(
+        new BaseRuleClasses.EmptyRule("java_test", coreBzlLabel("java_test")) {});
+    builder.addRuleDefinition(
+        new BaseRuleClasses.EmptyRule("java_plugin", coreBzlLabel("java_plugin")) {});
+    builder.addRuleDefinition(
+        new BaseRuleClasses.EmptyRule("java_toolchain", toolchainBzlLabel("java_toolchain")) {});
+    builder.addRuleDefinition(
+        new BaseRuleClasses.EmptyRule(
+            "java_package_configuration", toolchainBzlLabel("java_package_configuration")) {});
+    builder.addRuleDefinition(
+        new BaseRuleClasses.EmptyRule("java_runtime", toolchainBzlLabel("java_runtime")) {});
     builder.addRuleDefinition(new JavaPluginsFlagAliasRule());
 
     builder.addRuleDefinition(new ExtraActionRule());
@@ -80,11 +82,6 @@ public class JavaRules implements RuleSet {
             EXPERIMENTAL_JAVA_LIBRARY_EXPORT, Starlark.NONE));
 
     try {
-      builder.addWorkspaceFilePrefix(
-          ResourceFileLoader.loadResource(
-              BazelJavaRuleClasses.class, "rules_java_builtin.WORKSPACE"));
-      builder.addWorkspaceFileSuffix(
-          ResourceFileLoader.loadResource(BazelJavaRuleClasses.class, "jdk.WORKSPACE"));
       builder.addWorkspaceFileSuffix(
           ResourceFileLoader.loadResource(JavaRules.class, "coverage.WORKSPACE"));
     } catch (IOException e) {
@@ -95,5 +92,13 @@ public class JavaRules implements RuleSet {
   @Override
   public ImmutableList<RuleSet> requires() {
     return ImmutableList.of(CoreRules.INSTANCE, CcRules.INSTANCE);
+  }
+
+  private static String coreBzlLabel(String ruleName) {
+    return "@rules_java//java" + ":" + ruleName + ".bzl";
+  }
+
+  private static String toolchainBzlLabel(String ruleName) {
+    return "@rules_java//java/toolchains" + ":" + ruleName + ".bzl";
   }
 }

@@ -7,7 +7,6 @@ package(default_visibility = ["//visibility:private"])
 filegroup(
     name = "srcs",
     srcs = glob(["**"]) + [
-        "//src/test/shell/bazel/android:srcs",
         "//src/test/shell/bazel/apple:srcs",
         "//src/test/shell/bazel/remote:srcs",
         "//src/test/shell/bazel/testdata:srcs",
@@ -64,7 +63,7 @@ filegroup(
         "//third_party/ijar",
         "//tools:srcs",
         "@bazel_skylib//:test_deps",
-        "@bazel_tools//tools/jdk:current_java_runtime",
+        "@rules_java//toolchains:current_java_runtime",
     ],
     visibility = [
         "//src/test/shell:__subpackages__",
@@ -105,8 +104,10 @@ sh_test(
         "@bazel_tools//tools/bash/runfiles",
     ],
     shard_count = 3,
-    tags = ["no_windows"],
-    toolchains = ["@bazel_tools//tools/jdk:current_java_runtime"],
+    tags = [
+        "no_windows",
+    ],
+    toolchains = ["@rules_java//toolchains:current_java_runtime"],
 )
 
 sh_test(
@@ -128,6 +129,7 @@ sh_test(
     ],
     tags = [
         "no_windows",  # darwin-specific test
+        "requires-network",  # For Bzlmod
     ],
 )
 
@@ -137,7 +139,6 @@ sh_test(
     srcs = ["bazel_tools_test.sh"],
     data = [
         ":test-deps",
-        "//:workspace-file",
     ],
     tags = [
         "no_windows",  # objc-specific test
@@ -229,17 +230,31 @@ sh_test(
     srcs = ["bazel_java17_test.sh"],
     args = [
         # java_tools zip to test
-        "$(rlocationpath //src:java_tools_zip)",
-        "$(rlocationpath //src:java_tools_prebuilt_zip)",
+        "$(rlocationpath //src:java_tools_java8.zip)",
+        "$(rlocationpath //src:java_tools_prebuilt_java8.zip)",
     ],
     data = [
         ":gen_rules_java_repo_name",
         ":test-deps",
-        "//src:java_tools_prebuilt_zip",
-        "//src:java_tools_zip",
+        # Use java_tools compiled at Java language 8 instead (aligned with the
+        # default compilation level of java_tools). For the purpose
+        # of this test, we need java_tools to be running with runtime >11 to
+        # test the failure modes of incompatible system classpaths.
+        "//src:java_tools_prebuilt_java8.zip",
+        "//src:java_tools_java8.zip",
         "@bazel_tools//tools/bash/runfiles",
     ],
     tags = ["local"],
+)
+
+sh_test(
+    name = "bazel_rules_java_override_test",
+    srcs = ["bazel_rules_java_override_test.sh"],
+    data = [
+        ":gen_rules_java_repo_name",
+        ":test-deps",
+        "@bazel_tools//tools/bash/runfiles",
+    ],
 )
 
 sh_test(
@@ -258,11 +273,15 @@ sh_test(
         "@bazel_tools//tools/bash/runfiles",
     ],
     exec_compatible_with = ["//:highcpu_machine"],
+    shard_count = 2,
+    tags = [
+        "requires-network",  # For Bzlmod
+    ],
 )
 
-JAVA_VERSIONS = ("11", "17")
+JAVA_VERSIONS = ("11", "17", "21")
 
-JAVA_VERSIONS_COVERAGE = ("11", "17")
+JAVA_VERSIONS_COVERAGE = ("11", "17", "21")
 
 [
     sh_test(
@@ -272,8 +291,8 @@ JAVA_VERSIONS_COVERAGE = ("11", "17")
         srcs = ["bazel_java_test.sh"],
         args = [
             # java_tools zips to test
-            "$(rlocationpath //src:java_tools_zip)",
-            "$(rlocationpath //src:java_tools_prebuilt_zip)",
+            "$(rlocationpath %s)" % ("//src:java_tools_zip" if java_version == "21" else "//src:java_tools_java8.zip"),
+            "$(rlocationpath %s)" % ("//src:java_tools_prebuilt_zip" if java_version == "21" else "//src:java_tools_prebuilt_java8.zip"),
             # --java_language_version value
             java_version,
             # --java_runtime_version value
@@ -282,11 +301,15 @@ JAVA_VERSIONS_COVERAGE = ("11", "17")
         data = [
             ":gen_rules_java_repo_name",
             ":test-deps",
-            "//src:java_tools_prebuilt_zip",
-            "//src:java_tools_zip",
+            "//src:java_tools_zip" if java_version == "21" else "//src:java_tools_java8.zip",
+            "//src:java_tools_prebuilt_zip" if java_version == "21" else "//src:java_tools_prebuilt_java8.zip",
             "@bazel_tools//tools/bash/runfiles",
         ],
         exec_compatible_with = ["//:highcpu_machine"],
+        shard_count = 2,
+        tags = [
+            "requires-network",  # For Bzlmod
+        ],
     )
     for java_version in JAVA_VERSIONS
 ]
@@ -311,23 +334,14 @@ JAVA_VERSIONS_COVERAGE = ("11", "17")
             ":test-deps",
             "@bazel_tools//tools/bash/runfiles",
         ],
-        # This test is only run by the java_tools binaries pipeline.
-        tags = ["manual"],
+        tags = [
+            # This test is only run by the java_tools binaries pipeline.
+            "manual",
+            "requires-network",  # For Bzlmod
+        ],
     )
     for java_version in JAVA_VERSIONS
 ]
-
-sh_test(
-    name = "bazel_android_tools_test",
-    size = "small",
-    srcs = ["bazel_android_tools_test.sh"],
-    data = [
-        ":test-deps",
-        "//tools/android/runtime_deps:android_tools.tar",
-        "@bazel_tools//tools/bash/runfiles",
-    ],
-    tags = ["no_windows"],
-)
 
 sh_test(
     name = "bazel_java_tools_test",
@@ -338,6 +352,9 @@ sh_test(
         "//src:java_tools.zip",
         "//src:java_tools_prebuilt.zip",
         "@bazel_tools//tools/bash/runfiles",
+    ],
+    tags = [
+        "requires-network",  # For Bzlmod
     ],
 )
 
@@ -351,12 +368,14 @@ sh_test(
     ],
 )
 
+# TODO(b/324251617): downgrade test size to "large" once we no longer use Intel VMs
 sh_test(
     name = "bazel_proto_library_test",
-    size = "large",  # Downloads and compiles protobuf for *every* *test* *case*
+    size = "enormous",  # Downloads and compiles protobuf for *every* *test* *case*
     srcs = ["bazel_proto_library_test.sh"],
     data = [":test-deps"],
     exec_compatible_with = ["//:highcpu_machine"],
+    shard_count = 2,
     tags = [
         "no_windows",  # Doesn't work on Windows for unknown reason
         "requires-network",  # Allow this test to access internet to fetch rules_proto dependencies.
@@ -407,11 +426,13 @@ sh_test(
 
 sh_test(
     name = "bazel_rules_cc_test",
+    timeout = "eternal",
     srcs = ["bazel_rules_cc_test.sh"],
     data = [
         ":test-deps",
         "@bazel_tools//tools/bash/runfiles",
     ],
+    tags = ["requires-network"],
 )
 
 sh_test(
@@ -423,6 +444,7 @@ sh_test(
     tags = [
         "no-sandbox",
         "no_windows",
+        "requires-network",  # For Bzlmod
     ],
 )
 
@@ -535,8 +557,8 @@ sh_test(
         srcs = ["bazel_coverage_java_test.sh"],
         args = [
             # java_tools zips to test
-            "$(rlocationpath //src:java_tools_zip)",
-            "$(rlocationpath //src:java_tools_prebuilt_zip)",
+            "$(rlocationpath %s)" % ("//src:java_tools_zip" if java_version == "21" else "//src:java_tools_java8.zip"),
+            "$(rlocationpath %s)" % ("//src:java_tools_prebuilt_zip" if java_version == "21" else "//src:java_tools_prebuilt_java8.zip"),
             # WORKSPACE file of the coverage output generator repo to test
             "$(rlocationpath //tools/test/CoverageOutputGenerator/java/com/google/devtools/coverageoutputgenerator:coverage_empty_workspace)",
             # --java_runtime_version value
@@ -545,10 +567,10 @@ sh_test(
         data = [
             ":gen_rules_java_repo_name",
             ":test-deps",
-            "//src:java_tools_prebuilt_zip",
-            "//src:java_tools_zip",
+            "//src:java_tools_prebuilt_zip" if java_version == "21" else "//src:java_tools_prebuilt_java8.zip",
+            "//src:java_tools_zip" if java_version == "21" else "//src:java_tools_java8.zip",
             "//tools/test/CoverageOutputGenerator/java/com/google/devtools/coverageoutputgenerator:coverage_empty_workspace",
-            "//tools/test/CoverageOutputGenerator/java/com/google/devtools/coverageoutputgenerator:coverage_output_generator_repo",
+            "//tools/test/CoverageOutputGenerator/java/com/google/devtools/coverageoutputgenerator:coverage_output_generator_repo%s" % ("" if java_version == "21" else "_java8"),
         ],
         tags = ["no_windows"],
     )
@@ -569,6 +591,7 @@ sh_test(
     srcs = ["bazel_coverage_hermetic_py_test.sh"],
     data = [":test-deps"],
     tags = [
+        "manual",  # Bug: https://github.com/bazelbuild/rules_python/issues/2248
         "no_windows",
     ],
 )
@@ -585,7 +608,25 @@ sh_test(
 sh_test(
     name = "bazel_coverage_starlark_test",
     srcs = ["bazel_coverage_starlark_test.sh"],
+    args = ["released"],
     data = [":test-deps"],
+    tags = [
+        "no_windows",
+    ],
+)
+
+sh_test(
+    name = "bazel_coverage_starlark_head_test",
+    srcs = ["bazel_coverage_starlark_test.sh"],
+    args = [
+        # WORKSPACE file of the coverage output generator repo to test
+        "$(rlocationpath //tools/test/CoverageOutputGenerator/java/com/google/devtools/coverageoutputgenerator:coverage_empty_workspace)",
+    ],
+    data = [
+        ":test-deps",
+        "//tools/test/CoverageOutputGenerator/java/com/google/devtools/coverageoutputgenerator:coverage_empty_workspace",
+        "//tools/test/CoverageOutputGenerator/java/com/google/devtools/coverageoutputgenerator:coverage_output_generator_repo_java8",
+    ],
     tags = [
         "no_windows",
     ],
@@ -605,6 +646,8 @@ sh_test(
     srcs = ["bazel_cc_code_coverage_test.sh"],
     data = [":test-deps"],
     tags = [
+        # C++ coverage is not supported on macOS yet.
+        "no_macos",
         "no_windows",
     ],
 )
@@ -654,7 +697,10 @@ sh_test(
         ":test-deps",
         "//src/main/java/com/google/devtools/build/lib/skyframe/packages/testing:BazelPackageLoaderTester",
     ],
-    tags = ["no_windows"],
+    tags = [
+        "no_windows",
+        "requires-network",
+    ],
 )
 
 sh_test(
@@ -685,6 +731,7 @@ sh_test(
 genquery(
     name = "embedded_tools_deps",
     expression = "kind(\"cc_(binary|library)\", deps(//src:embedded_tools_jdk_allmodules_srcs))",
+    opts = ["--notool_deps"],
     scope = ["//src:embedded_tools_jdk_allmodules_srcs"],
 )
 
@@ -696,27 +743,6 @@ sh_test(
         ":embedded_tools_deps",
         ":test-deps",
         "//src/test/shell/bazel/testdata:embedded_tools_deps_test_data",
-    ],
-    tags = ["no_windows"],
-)
-
-genquery(
-    name = "stardoc_deps",
-    expression = "kind(\"^(?!package group$)\", deps(//src/main/java/com/google/devtools/build/skydoc:skydoc_lib))",
-    opts = [
-        "--notool_deps",
-        "--noimplicit_deps",
-    ],
-    scope = ["//src/main/java/com/google/devtools/build/skydoc:skydoc_lib"],
-)
-
-sh_test(
-    name = "stardoc_deps_test",
-    size = "medium",
-    srcs = ["stardoc_deps_test.sh"],
-    data = [
-        ":stardoc_deps",
-        ":test-deps",
     ],
     tags = ["no_windows"],
 )
@@ -774,6 +800,17 @@ sh_test(
 )
 
 sh_test(
+    name = "external_remote_file_test",
+    size = "medium",
+    srcs = ["external_remote_file_test.sh"],
+    data = [
+        ":test-deps",
+        "@bazel_tools//tools/bash/runfiles",
+    ],
+    shard_count = 3,
+)
+
+sh_test(
     name = "external_path_test",
     size = "medium",
     srcs = ["external_path_test.sh"],
@@ -803,20 +840,15 @@ sh_test(
     srcs = ["local_repository_test.sh"],
     data = [":test-deps"],
     shard_count = 3,
-    tags = ["no_windows"],
+    tags = [
+        "no_windows",
+    ],
 )
 
 sh_test(
     name = "cross_repository_test",
     size = "large",
     srcs = ["cross_repository_test.sh"],
-    data = [":test-deps"],
-    tags = ["no_windows"],
-)
-
-sh_test(
-    name = "starlark_prefetching_test",
-    srcs = ["starlark_prefetching_test.sh"],
     data = [":test-deps"],
     tags = ["no_windows"],
 )
@@ -847,8 +879,9 @@ sh_test(
     data = [
         ":test-deps",
         "@bazel_tools//tools/bash/runfiles",
+        "@local_jdk//:jdk",  # for remote_helpers setup_localjdk_javabase
     ],
-    shard_count = 6,
+    shard_count = 10,
     tags = [
         "requires-network",
     ],
@@ -880,7 +913,7 @@ sh_test(
 
 sh_test(
     name = "disk_cache_test",
-    size = "small",
+    size = "medium",
     srcs = ["disk_cache_test.sh"],
     data = [":test-deps"],
     tags = ["no_windows"],
@@ -966,8 +999,8 @@ sh_test(
     ],
     shard_count = 22,
     tags = [
-        "block-network",
         "no_windows",
+        "requires-network",  # rules_python are needed and are hard to mock out
     ],
 )
 
@@ -977,7 +1010,9 @@ sh_test(
     srcs = ["cc_integration_test.sh"],
     data = [":test-deps"],
     shard_count = 10,
-    tags = ["no_windows"],
+    tags = [
+        "no_windows",
+    ],
 )
 
 sh_test(
@@ -1074,6 +1109,17 @@ sh_test(
     name = "client_test",
     size = "medium",
     srcs = ["client_test.sh"],
+    data = [
+        ":test-deps",
+        "//src/test/java/com/google/devtools/build/lib/testutil:external_file_system_lock_helper",
+    ],
+    tags = ["no_windows"],
+)
+
+sh_test(
+    name = "command_profiler_test",
+    size = "medium",
+    srcs = ["command_profiler_test.sh"],
     data = [":test-deps"],
     tags = ["no_windows"],
 )
@@ -1111,8 +1157,10 @@ sh_test(
         "//src:bazel",
         "@bazel_tools//tools/bash/runfiles",
     ],
-    tags = ["no_windows"],
-    toolchains = ["@bazel_tools//tools/jdk:current_java_runtime"],
+    tags = [
+        "no_windows",
+    ],
+    toolchains = ["@rules_java//toolchains:current_java_runtime"],
 )
 
 sh_test(
@@ -1206,8 +1254,10 @@ sh_test(
     srcs = ["java_launcher_test.sh"],
     args = ["$(JAVABASE)"],
     data = [":test-deps"],
-    tags = ["no_windows"],
-    toolchains = ["@bazel_tools//tools/jdk:current_java_runtime"],
+    tags = [
+        "no_windows",
+    ],
+    toolchains = ["@rules_java//toolchains:current_java_runtime"],
 )
 
 genquery(
@@ -1324,12 +1374,16 @@ sh_test(
 
 sh_test(
     name = "path_mapping_test",
+    size = "large",
     srcs = ["path_mapping_test.sh"],
     data = [
         ":test-deps",
         "//src/tools/remote:worker",
     ],
-    tags = ["no_windows"],
+    tags = [
+        "no_windows",
+        "requires-network",  # for Bzlmod
+    ],
     deps = [
         "//src/test/shell/bazel/remote:remote_utils",
         "@bazel_tools//tools/bash/runfiles",
@@ -1341,13 +1395,6 @@ sh_test(
     srcs = ["platforms_test.sh"],
     data = [":test-deps"],
     deps = ["@bazel_tools//tools/bash/runfiles"],
-)
-
-sh_test(
-    name = "platform_mapping_test",
-    srcs = ["platform_mapping_test.sh"],
-    data = [":test-deps"],
-    tags = ["no_windows"],
 )
 
 sh_test(
@@ -1387,7 +1434,7 @@ sh_test(
     srcs = ["verify_workspace.sh"],
     data = [
         ":test-deps",
-        "//:workspace-file",
+        "//:workspace-deps-bzl",
         "@bazel_tools//tools/bash/runfiles",
     ],
     tags = [
@@ -1405,4 +1452,14 @@ sh_test(
         "@bazel_tools//tools/bash/runfiles",
     ],
     tags = ["no_windows"],
+)
+
+sh_test(
+    name = "profile_test",
+    size = "small",
+    srcs = ["profile_test.sh"],
+    data = [
+        ":test-deps",
+        "@bazel_tools//tools/bash/runfiles",
+    ],
 )

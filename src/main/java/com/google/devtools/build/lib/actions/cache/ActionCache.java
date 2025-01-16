@@ -17,8 +17,8 @@ package com.google.devtools.build.lib.actions.cache;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
+import static java.util.Objects.requireNonNull;
 
-import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
@@ -112,14 +112,24 @@ public interface ActionCache {
      *
      * <p>We can't serialize {@link TreeArtifactValue} directly as it contains some objects that we
      * don't want to serialize, e.g. {@link SpecialArtifact}.
+     *
+     * @param childValues A map from parentRelativePath to the file metadata
      */
-    @AutoValue
-    public abstract static class SerializableTreeArtifactValue {
+    public record SerializableTreeArtifactValue(
+        ImmutableMap<String, RemoteFileArtifactValue> childValues,
+        Optional<RemoteFileArtifactValue> archivedFileValue,
+        Optional<PathFragment> materializationExecPath) {
+      public SerializableTreeArtifactValue {
+        requireNonNull(childValues, "childValues");
+        requireNonNull(archivedFileValue, "archivedFileValue");
+        requireNonNull(materializationExecPath, "materializationExecPath");
+      }
+
       public static SerializableTreeArtifactValue create(
           ImmutableMap<String, RemoteFileArtifactValue> childValues,
           Optional<RemoteFileArtifactValue> archivedFileValue,
           Optional<PathFragment> materializationExecPath) {
-        return new AutoValue_ActionCache_Entry_SerializableTreeArtifactValue(
+        return new SerializableTreeArtifactValue(
             childValues, archivedFileValue, materializationExecPath);
       }
 
@@ -159,13 +169,6 @@ public interface ActionCache {
             SerializableTreeArtifactValue.create(
                 childValues, archivedFileValue, materializationExecPath));
       }
-
-      // A map from parentRelativePath to the file metadata
-      public abstract ImmutableMap<String, RemoteFileArtifactValue> childValues();
-
-      public abstract Optional<RemoteFileArtifactValue> archivedFileValue();
-
-      public abstract Optional<PathFragment> materializationExecPath();
     }
 
     public Entry(
@@ -200,12 +203,6 @@ public interface ActionCache {
     /**
      * Computes an order-independent digest of action properties. This includes a map of client
      * environment variables and the non-default permissions for output artifacts of the action.
-     *
-     * <p>Note that as discussed in https://github.com/bazelbuild/bazel/issues/15660, using {@link
-     * DigestUtils#xor} to achieve order-independence is questionable in case it is possible that
-     * multiple string keys map to the same bytes when passed through {@link Fingerprint#addString}
-     * (due to lossy conversion from UTF-16 to UTF-8). We could instead use a sorted map, however
-     * changing the digest function would cause action cache misses across bazel versions.
      */
     private static byte[] digestActionProperties(
         Map<String, String> clientEnv, OutputPermissions outputPermissions) {
@@ -214,14 +211,14 @@ public interface ActionCache {
       for (Map.Entry<String, String> entry : clientEnv.entrySet()) {
         fp.addString(entry.getKey());
         fp.addString(entry.getValue());
-        result = DigestUtils.xor(result, fp.digestAndReset());
+        result = DigestUtils.combineUnordered(result, fp.digestAndReset());
       }
       // Add the permissions mode to the digest if it differs from the default.
       // This is a bit of a hack to save memory on entries which have the default permissions mode
       // and no client env.
       if (outputPermissions != OutputPermissions.READONLY) {
         fp.addInt(outputPermissions.getPermissionsMode());
-        result = DigestUtils.xor(result, fp.digestAndReset());
+        result = DigestUtils.combineUnordered(result, fp.digestAndReset());
       }
       return result;
     }
@@ -417,6 +414,9 @@ public interface ActionCache {
    * Dumps action cache content into the given PrintStream.
    */
   void dump(PrintStream out);
+
+  /** The number of entries in the cache. */
+  int size();
 
   /** Accounts one cache hit. */
   void accountHit();

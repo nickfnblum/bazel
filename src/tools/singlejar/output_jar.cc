@@ -24,6 +24,8 @@
 #include <sys/stat.h>
 #include <time.h>
 
+#include <cstring>
+
 #ifndef _WIN32
 #include <unistd.h>
 #else
@@ -366,6 +368,16 @@ bool OutputJar::AddJar(int jar_path_index) {
     if (ends_with(file_name, file_name_length, ".SF") ||
         ends_with(file_name, file_name_length, ".RSA") ||
         ends_with(file_name, file_name_length, ".DSA")) {
+      continue;
+    }
+
+    // Skip module-info.class files
+    // Deploy jars are not modularized jars, and including module-infos from
+    // modularized dependencies doesn't work. See also b/204112761.
+    if (!options_->no_strip_module_info &&
+        (!strncmp(file_name, "module-info.class", file_name_length) ||
+         (begins_with(file_name, file_name_length, "META-INF/versions/") &&
+          ends_with(file_name, file_name_length, "/module-info.class")))) {
       continue;
     }
 
@@ -878,15 +890,8 @@ bool OutputJar::Close() {
       ecd->signature();
       ecd->this_disk_entries16(0xFFFF);
       ecd->total_entries16(0xFFFF);
-      // Java Compiler (javac) uses its own "optimized" Zip handler (see
-      // https://bugs.openjdk.java.net/browse/JDK-7018859) which may fail
-      // to handle 0xFFFFFFFF in the CEN size and CEN offset fields. Try
-      // to use 32-bit values here, too. Hopefully by the time we need to
-      // handle really large archives, this is fixes upstream. Note that this
-      // affects javac and javah only, 'jar' experiences no problems.
-      ecd->cen_size32(std::min(cen_size, static_cast<size_t>(0xFFFFFFFFUL)));
-      ecd->cen_offset32(
-          std::min(output_position, static_cast<off64_t>(0x0FFFFFFFFL)));
+      ecd->cen_size32(0xFFFFFFFF);
+      ecd->cen_offset32(0xFFFFFFFF);
     }
   } else {
     ECD *ecd = reinterpret_cast<ECD *>(ReserveCdh(sizeof(ECD)));

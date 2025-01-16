@@ -16,7 +16,6 @@ package com.google.devtools.build.lib.rules.cpp;
 import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.devtools.build.lib.actions.ActionAnalysisMetadata.mergeMaps;
-import static java.nio.charset.StandardCharsets.ISO_8859_1;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.CharMatcher;
@@ -39,6 +38,7 @@ import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.ActionResult;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.Artifact.DerivedArtifact;
+import com.google.devtools.build.lib.actions.ArtifactExpander;
 import com.google.devtools.build.lib.actions.ArtifactResolver;
 import com.google.devtools.build.lib.actions.CommandAction;
 import com.google.devtools.build.lib.actions.CommandLine;
@@ -50,6 +50,7 @@ import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.actions.ExecutionRequirements;
 import com.google.devtools.build.lib.actions.ParamFileInfo;
 import com.google.devtools.build.lib.actions.ParameterFile.ParameterFileType;
+import com.google.devtools.build.lib.actions.PathMapper;
 import com.google.devtools.build.lib.actions.ResourceSet;
 import com.google.devtools.build.lib.actions.SimpleSpawn;
 import com.google.devtools.build.lib.actions.Spawn;
@@ -57,7 +58,9 @@ import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.extra.CppCompileInfo;
 import com.google.devtools.build.lib.actions.extra.EnvironmentVariable;
 import com.google.devtools.build.lib.actions.extra.ExtraActionInfo;
+import com.google.devtools.build.lib.analysis.actions.PathMappers;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
+import com.google.devtools.build.lib.analysis.config.CoreOptions.OutputPathsMode;
 import com.google.devtools.build.lib.analysis.starlark.Args;
 import com.google.devtools.build.lib.bugreport.BugReport;
 import com.google.devtools.build.lib.cmdline.LabelConstants;
@@ -92,9 +95,9 @@ import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import com.google.devtools.build.skyframe.SkyframeLookupResult;
+import com.google.protobuf.ByteString;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -264,8 +267,6 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     this.sourceFile = sourceFile;
     this.shareable = shareable;
     this.configuration = configuration;
-    // We do not need to include the middleman artifact since it is a generated artifact and will
-    // definitely exist prior to this action execution.
     this.mandatoryInputs = mandatoryInputs;
     this.mandatorySpawnInputs = mandatorySpawnInputs;
     this.additionalPrunableHeaders = additionalPrunableHeaders;
@@ -278,12 +279,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
         Preconditions.checkNotNull(additionalIncludeScanningRoots);
     this.compileCommandLine =
         buildCommandLine(
-            sourceFile,
-            coptsFilter,
-            actionName,
-            dotdFile,
-            featureConfiguration,
-            variables);
+            sourceFile, coptsFilter, actionName, dotdFile, featureConfiguration, variables);
     this.executionInfo = executionInfo;
     this.actionName = actionName;
     this.featureConfiguration = featureConfiguration;
@@ -514,7 +510,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
                 "failed to generate compile command for rule '%s: %s",
                 getOwner().getLabel(), e.getMessage());
         DetailedExitCode code = createDetailedExitCode(message, Code.COMMAND_GENERATION_FAILURE);
-        throw new ActionExecutionException(message, this, /*catastrophe=*/ false, code);
+        throw new ActionExecutionException(message, this, /* catastrophe= */ false, code);
       }
       commandLineKey = computeCommandLineKey(options);
       ImmutableList<PathFragment> systemIncludeDirs = getSystemIncludeDirs(options);
@@ -611,7 +607,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
   }
 
   @Override
-  protected final NestedSet<Artifact> getOriginalInputs() {
+  public final NestedSet<Artifact> getOriginalInputs() {
     return mandatoryInputs;
   }
 
@@ -671,7 +667,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
   public List<PathFragment> getQuoteIncludeDirs() {
     ImmutableList.Builder<PathFragment> result = ImmutableList.builder();
     result.addAll(ccCompilationContext.getQuoteIncludeDirs());
-    ImmutableList<String> copts = compileCommandLine.getCopts();
+    ImmutableList<String> copts = compileCommandLine.getCopts(PathMapper.NOOP);
     for (int i = 0; i < copts.size(); i++) {
       String opt = copts.get(i);
       if (opt.startsWith("-iquote")) {
@@ -692,7 +688,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
   public List<PathFragment> getIncludeDirs() {
     ImmutableList.Builder<PathFragment> result = ImmutableList.builder();
     result.addAll(ccCompilationContext.getIncludeDirs());
-    for (String opt : compileCommandLine.getCopts()) {
+    for (String opt : compileCommandLine.getCopts(PathMapper.NOOP)) {
       if (opt.startsWith("-I") || opt.startsWith("/I")) {
         // We insist on the combined form "-Idir".
         String includeDir = opt.substring(2);
@@ -856,9 +852,14 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     }
   }
 
-  @Override()
+  @Override
   public ImmutableMap<String, String> getEffectiveEnvironment(Map<String, String> clientEnv)
       throws CommandLineExpansionException {
+    return getEffectiveEnvironment(clientEnv, PathMapper.NOOP);
+  }
+
+  public ImmutableMap<String, String> getEffectiveEnvironment(
+      Map<String, String> clientEnv, PathMapper pathMapper) throws CommandLineExpansionException {
     ActionEnvironment env = getEnvironment();
     Map<String, String> environment = Maps.newLinkedHashMapWithExpectedSize(env.estimatedSize());
     env.resolve(environment, clientEnv);
@@ -869,13 +870,17 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
       environment.put("PWD", "/proc/self/cwd");
     }
 
-    environment.putAll(compileCommandLine.getEnvironment());
+    environment.putAll(compileCommandLine.getEnvironment(pathMapper));
     return ImmutableMap.copyOf(environment);
   }
 
   @Override
   public List<String> getArguments() throws CommandLineExpansionException {
-    return compileCommandLine.getArguments(paramFilePath, getOverwrittenVariables());
+    return getArguments(PathMapper.NOOP);
+  }
+
+  private List<String> getArguments(PathMapper pathMapper) throws CommandLineExpansionException {
+    return compileCommandLine.getArguments(paramFilePath, getOverwrittenVariables(), pathMapper);
   }
 
   @Override
@@ -883,7 +888,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     try {
       return StarlarkList.immutableCopyOf(
           compileCommandLine.getArguments(
-              /* parameterFilePath= */ null, getOverwrittenVariables()));
+              /* parameterFilePath= */ null, getOverwrittenVariables(), PathMapper.NOOP));
 
     } catch (CommandLineExpansionException ex) {
       throw new EvalException(ex);
@@ -899,10 +904,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     ParamFileInfo paramFileInfo = null;
     if (cppConfiguration().useArgsParamsFile()) {
       paramFileInfo =
-          ParamFileInfo.builder(ParameterFileType.GCC_QUOTED)
-              .setCharset(ISO_8859_1)
-              .setUseAlways(true)
-              .build();
+          ParamFileInfo.builder(ParameterFileType.GCC_QUOTED).setUseAlways(true).build();
     }
     CommandLineAndParamFileInfo commandLineAndParamFileInfo =
         new CommandLineAndParamFileInfo(commandLine, paramFileInfo);
@@ -918,7 +920,8 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     CppCompileInfo.Builder info = CppCompileInfo.newBuilder();
     info.setTool(compileCommandLine.getToolPath());
 
-    List<String> options = compileCommandLine.getCompilerOptions(getOverwrittenVariables());
+    List<String> options =
+        compileCommandLine.getCompilerOptions(getOverwrittenVariables(), PathMapper.NOOP);
 
     for (String option : options) {
       info.addCompilerOption(option);
@@ -953,7 +956,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
   /** Returns the compiler options. */
   @VisibleForTesting
   public List<String> getCompilerOptions() throws CommandLineExpansionException {
-    return compileCommandLine.getCompilerOptions(/*overwrittenVariables=*/ null);
+    return compileCommandLine.getCompilerOptions(/* overwrittenVariables= */ null, PathMapper.NOOP);
   }
 
   @Override
@@ -961,10 +964,8 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     return mergeMaps(super.getExecutionInfo(), executionInfo);
   }
 
-  private boolean validateInclude(
-      Set<Artifact> allowedIncludes,
-      Iterable<PathFragment> ignoreDirs,
-      Artifact include) {
+  private static boolean validateInclude(
+      Set<Artifact> allowedIncludes, Iterable<PathFragment> ignoreDirs, Artifact include) {
     // Only declared modules are added to an action and so they are always valid.
     return include.isFileType(CppFileTypes.CPP_MODULE)
         ||
@@ -1006,15 +1007,18 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     }
     IncludeProblems errors = new IncludeProblems();
     Set<Artifact> allowedIncludes = new HashSet<>();
-    for (Artifact input :
-        Iterables.concat(
-            mandatoryInputs.toList(),
-            ccCompilationContext.getDeclaredIncludeSrcs().toList(),
-            additionalPrunableHeaders.toList())) {
-      if (input.isMiddlemanArtifact() || input.isTreeArtifact()) {
-        actionExecutionContext.getArtifactExpander().expand(input, allowedIncludes);
+    for (NestedSet<Artifact> set :
+        ImmutableList.of(
+            mandatoryInputs,
+            ccCompilationContext.getDeclaredIncludeSrcs(),
+            additionalPrunableHeaders)) {
+      for (Artifact input : set.toList()) {
+        if (input.isTreeArtifact()) {
+          allowedIncludes.addAll(
+              actionExecutionContext.getArtifactExpander().tryExpandTreeArtifact(input));
+        }
+        allowedIncludes.add(input);
       }
-      allowedIncludes.add(input);
     }
 
     Iterable<PathFragment> ignoreDirs =
@@ -1088,7 +1092,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
   }
 
   /**
-   * Recalculates this action's live input collection, including sources, middlemen.
+   * Recalculates this action's live input collection.
    *
    * <p>Can only be called if {@link #discoversInputs}, and must be called after execution in that
    * case.
@@ -1235,14 +1239,14 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
   @Override
   public void computeKey(
       ActionKeyContext actionKeyContext,
-      @Nullable Artifact.ArtifactExpander artifactExpander,
+      @Nullable ArtifactExpander artifactExpander,
       Fingerprint fp)
       throws CommandLineExpansionException, InterruptedException {
     computeKey(
         actionKeyContext,
         fp,
         getEnvironment(),
-        compileCommandLine.getEnvironment(),
+        compileCommandLine.getEnvironment(PathMapper.NOOP),
         executionInfo,
         getCommandLineKey(),
         ccCompilationContext.getDeclaredIncludeSrcs(),
@@ -1250,7 +1254,9 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
         mandatorySpawnInputs,
         additionalPrunableHeaders,
         builtInIncludeDirectories,
-        ccCompilationContext.getTransitiveCompilationPrerequisites());
+        ccCompilationContext.getTransitiveCompilationPrerequisites(),
+        getMnemonic(),
+        PathMappers.getOutputPathsMode(configuration));
   }
 
   // Separated into a helper method so that it can be called from CppCompileActionTemplate.
@@ -1266,7 +1272,9 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
       NestedSet<Artifact> mandatorySpawnInputs,
       NestedSet<Artifact> prunableHeaders,
       List<PathFragment> builtInIncludeDirectories,
-      NestedSet<Artifact> inputsForInvalidation)
+      NestedSet<Artifact> inputsForInvalidation,
+      String mnemonic,
+      OutputPathsMode outputPathsMode)
       throws CommandLineExpansionException, InterruptedException {
     fp.addUUID(GUID);
     env.addTo(fp);
@@ -1292,6 +1300,14 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     // This is needed for CppLinkstampCompile.
     fp.addInt(0);
     actionKeyContext.addNestedSetToFingerprint(fp, inputsForInvalidation);
+
+    PathMappers.addToFingerprint(
+        mnemonic,
+        executionInfo,
+        NestedSetBuilder.emptySet(Order.STABLE_ORDER),
+        actionKeyContext,
+        outputPathsMode,
+        fp);
   }
 
   private byte[] getCommandLineKey() throws CommandLineExpansionException {
@@ -1317,22 +1333,25 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
   @Override
   public ActionResult execute(ActionExecutionContext actionExecutionContext)
       throws ActionExecutionException, InterruptedException {
+    PathMapper pathMapper =
+        PathMappers.create(
+            this, PathMappers.getOutputPathsMode(configuration), /* isStarlarkAction= */ false);
+
     if (featureConfiguration.isEnabled(CppRuleClasses.COMPILER_PARAM_FILE)) {
       try {
         paramFileActionInput =
             new ParamFileActionInput(
                 paramFilePath,
-                compileCommandLine.getCompilerOptions(getOverwrittenVariables()),
+                compileCommandLine.getCompilerOptions(getOverwrittenVariables(), pathMapper),
                 // TODO(b/132888308): Support MSVC, which has its own method of escaping strings.
-                ParameterFileType.GCC_QUOTED,
-                StandardCharsets.ISO_8859_1);
+                ParameterFileType.GCC_QUOTED);
       } catch (CommandLineExpansionException e) {
         String message =
             String.format(
                 "failed to generate compile command for rule '%s: %s",
                 getOwner().getLabel(), e.getMessage());
         DetailedExitCode code = createDetailedExitCode(message, Code.COMMAND_GENERATION_FAILURE);
-        throw new ActionExecutionException(message, this, /*catastrophe=*/ false, code);
+        throw new ActionExecutionException(message, this, /* catastrophe= */ false, code);
       }
     }
 
@@ -1358,7 +1377,10 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     Spawn spawn;
     try {
       spawn =
-          createSpawn(actionExecutionContext.getExecRoot(), actionExecutionContext.getClientEnv());
+          createSpawn(
+              actionExecutionContext.getExecRoot(),
+              actionExecutionContext.getClientEnv(),
+              pathMapper);
     } finally {
       clearAdditionalInputs();
     }
@@ -1407,7 +1429,8 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
               scanningContext.getArtifactResolver(),
               showIncludesFilterForStdout,
               showIncludesFilterForStderr,
-              siblingRepositoryLayout);
+              siblingRepositoryLayout,
+              pathMapper);
       updateActionInputs(discoveredInputs);
       validateInclusions(actionExecutionContext, discoveredInputs);
       return ActionResult.create(spawnResults);
@@ -1425,7 +1448,8 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
             execRoot,
             scanningContext.getArtifactResolver(),
             dotDContents,
-            siblingRepositoryLayout);
+            siblingRepositoryLayout,
+            pathMapper);
     dotDContents = null; // Garbage collect in-memory .d contents.
 
     updateActionInputs(discoveredInputs);
@@ -1472,16 +1496,11 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
   }
 
   @Nullable
-  private byte[] getDotDContents(SpawnResult spawnResult) throws EnvironmentalExecException {
+  private byte[] getDotDContents(SpawnResult spawnResult) {
     if (getDotdFile() != null) {
-      InputStream in = spawnResult.getInMemoryOutput(getDotdFile());
-      if (in != null) {
-        try {
-          return ByteStreams.toByteArray(in);
-        } catch (IOException e) {
-          throw new EnvironmentalExecException(
-              e, createFailureDetail("Reading in-memory .d file failed", Code.D_FILE_READ_FAILURE));
-        }
+      ByteString content = spawnResult.getInMemoryOutput(getDotdFile());
+      if (content != null) {
+        return content.toByteArray();
       }
     }
     return null;
@@ -1491,7 +1510,8 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     return featureConfiguration.isEnabled(CppRuleClasses.PARSE_SHOWINCLUDES);
   }
 
-  Spawn createSpawn(Path execRoot, Map<String, String> clientEnv) throws ActionExecutionException {
+  Spawn createSpawn(Path execRoot, Map<String, String> clientEnv, PathMapper pathMapper)
+      throws ActionExecutionException {
     // Intentionally not adding {@link CppCompileAction#inputsForInvalidation}, those are not needed
     // for execution.
     NestedSetBuilder<ActionInput> inputsBuilder =
@@ -1550,10 +1570,9 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     try {
       return new SimpleSpawn(
           this,
-          ImmutableList.copyOf(getArguments()),
-          getEffectiveEnvironment(clientEnv),
+          ImmutableList.copyOf(getArguments(pathMapper)),
+          getEffectiveEnvironment(clientEnv, pathMapper),
           executionInfo.buildOrThrow(),
-          /* runfilesSupplier= */ null,
           /* filesetMappings= */ ImmutableMap.of(),
           inputs,
           /* tools= */ NestedSetBuilder.emptySet(Order.STABLE_ORDER),
@@ -1564,14 +1583,15 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
                   enabledCppCompileResourcesEstimation(),
                   getMnemonic(),
                   OS.getCurrent(),
-                  inputs.memoizedFlattenAndGetSize()));
+                  inputs.memoizedFlattenAndGetSize()),
+          pathMapper);
     } catch (CommandLineExpansionException e) {
       String message =
           String.format(
               "failed to generate compile command for rule '%s: %s",
               getOwner().getLabel(), e.getMessage());
       DetailedExitCode code = createDetailedExitCode(message, Code.COMMAND_GENERATION_FAILURE);
-      throw new ActionExecutionException(message, this, /*catastrophe=*/ false, code);
+      throw new ActionExecutionException(message, this, /* catastrophe= */ false, code);
     }
   }
 
@@ -1580,7 +1600,8 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
       ArtifactResolver artifactResolver,
       ShowIncludesFilter showIncludesFilterForStdout,
       ShowIncludesFilter showIncludesFilterForStderr,
-      boolean siblingRepositoryLayout)
+      boolean siblingRepositoryLayout,
+      PathMapper pathMapper)
       throws ActionExecutionException {
     Collection<Path> stdoutDeps = showIncludesFilterForStdout.getDependencies(execRoot);
     Collection<Path> stderrDeps = showIncludesFilterForStderr.getDependencies(execRoot);
@@ -1612,7 +1633,8 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
         getAllowedDerivedInputs(),
         execRoot,
         artifactResolver,
-        siblingRepositoryLayout);
+        siblingRepositoryLayout,
+        pathMapper);
   }
 
   @VisibleForTesting
@@ -1621,7 +1643,8 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
       Path execRoot,
       ArtifactResolver artifactResolver,
       byte[] dotDContents,
-      boolean siblingRepositoryLayout)
+      boolean siblingRepositoryLayout,
+      PathMapper pathMapper)
       throws ActionExecutionException {
     Preconditions.checkNotNull(getDotdFile(), "Trying to scan .d file which is unset");
     return HeaderDiscovery.discoverInputsFromDependencies(
@@ -1633,7 +1656,8 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
         getAllowedDerivedInputs(),
         execRoot,
         artifactResolver,
-        siblingRepositoryLayout);
+        siblingRepositoryLayout,
+        pathMapper);
   }
 
   private DependencySet processDepset(
@@ -1731,7 +1755,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
               "failed to generate compile environment variables for rule '%s: %s",
               getOwner().getLabel(), e.getMessage());
       DetailedExitCode code = createDetailedExitCode(message, Code.COMMAND_GENERATION_FAILURE);
-      throw new ActionExecutionException(message, this, /*catastrophe=*/ false, code);
+      throw new ActionExecutionException(message, this, /* catastrophe= */ false, code);
     }
   }
 
@@ -1781,7 +1805,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     // The first element in getArguments() is actually the command to execute.
     String legend = "  Command: ";
     try {
-      for (String argument : ShellEscaper.escapeAll(getArguments())) {
+      for (String argument : ShellEscaper.escapeAll(getArguments(PathMapper.NOOP))) {
         message.append(legend);
         message.append(argument);
         message.append('\n');

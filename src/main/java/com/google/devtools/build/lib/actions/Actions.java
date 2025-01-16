@@ -23,11 +23,11 @@ import com.google.common.collect.Iterators;
 import com.google.common.escape.Escaper;
 import com.google.common.escape.Escapers;
 import com.google.common.flogger.GoogleLogger;
-import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.skyframe.SkyframeAwareAction;
 import com.google.devtools.build.lib.vfs.OsPathPolicy;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.skyframe.WalkableGraph;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Comparator;
@@ -36,17 +36,20 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import javax.annotation.Nullable;
 
 /** Utility class for actions. */
 public final class Actions {
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
 
-  private static final Escaper PATH_ESCAPER = Escapers.builder()
-      .addEscape('_', "_U")
-      .addEscape('/', "_S")
-      .addEscape('\\', "_B")
-      .addEscape(':', "_C")
-      .build();
+  private static final Escaper PATH_ESCAPER =
+      Escapers.builder()
+          .addEscape('_', "_U")
+          .addEscape('/', "_S")
+          .addEscape('\\', "_B")
+          .addEscape(':', "_C")
+          .addEscape('@', "_A")
+          .build();
 
   private Actions() {}
 
@@ -88,8 +91,8 @@ public final class Actions {
         // Non-Actions cannot be shared.
         && a instanceof Action
         && b instanceof Action
-        && a.getKey(actionKeyContext, /*artifactExpander=*/ null)
-            .equals(b.getKey(actionKeyContext, /*artifactExpander=*/ null))
+        && a.getKey(actionKeyContext, /* artifactExpander= */ null)
+            .equals(b.getKey(actionKeyContext, /* artifactExpander= */ null))
         && artifactsEqualWithoutOwner(
             a.getMandatoryInputs().toList(), b.getMandatoryInputs().toList())
         && artifactsEqualWithoutOwner(a.getOutputs(), b.getOutputs());
@@ -238,11 +241,7 @@ public final class Actions {
         if (equalOutput != null) {
           // Yes: assert that its generating action and this artifact's are compatible.
           verifyGeneratingActionKeys(
-              equalOutput,
-              generatingActionKey,
-              allowSharedAction,
-              actionKeyContext,
-              actions);
+              equalOutput, generatingActionKey, allowSharedAction, actionKeyContext, actions);
         }
         // Was this output already seen, so it has a generating action key set?
         if (!output.hasGeneratingActionKey()) {
@@ -261,11 +260,7 @@ public final class Actions {
           }
           // Key is already set: verify that the generating action and this action are compatible.
           verifyGeneratingActionKeys(
-              output,
-              generatingActionKey,
-              allowSharedAction,
-              actionKeyContext,
-              actions);
+              output, generatingActionKey, allowSharedAction, actionKeyContext, actions);
         }
       }
       actionIndex++;
@@ -298,6 +293,25 @@ public final class Actions {
       };
 
   /**
+   * Check whether two artifacts are a runfiles tree - runfiles output manifest pair.
+   *
+   * <p>This is necessary because these are exempt from the "path of one artifact cannot be a prefix
+   * of another" rule. This is like this for historical reasons.
+   */
+  public static boolean isRunfilesArtifactPair(Artifact runfilesTree, Artifact runfilesManifest) {
+    if (!runfilesTree.isRunfilesTree()) {
+      // The outside artifact is not a runfiles tree. No go.
+      return false;
+    }
+
+    // Now check whether the path of the inner artifact matches the expected path of a runfiles
+    // output manifest.
+    return runfilesManifest
+        .getExecPathString()
+        .equals(runfilesTree.getExecPath().getRelative("MANIFEST").getPathString());
+  }
+
+  /**
    * Finds Artifact prefix conflicts between generated artifacts. An artifact prefix conflict
    * happens if one action generates an artifact whose path is a strict prefix of another artifact's
    * path. Those two artifacts cannot exist simultaneously in the output tree.
@@ -305,9 +319,9 @@ public final class Actions {
    * @param actionGraph the {@link ActionGraph} to query for artifact conflicts
    * @param artifacts all generated artifacts in the build
    * @return An immutable map between actions that generated the conflicting artifacts and their
-   *     associated {@link ArtifactPrefixConflictException}
+   *     associated {@link ActionConflictException}
    */
-  public static ImmutableMap<ActionAnalysisMetadata, ArtifactPrefixConflictException>
+  public static ImmutableMap<ActionAnalysisMetadata, ActionConflictException>
       findArtifactPrefixConflicts(ActionGraph actionGraph, Collection<Artifact> artifacts) {
     // No actions in graph -- currently happens only in tests. Special-cased because .next() call
     // below is unconditional.
@@ -319,7 +333,7 @@ public final class Actions {
     Arrays.parallelSort(artifactArray, EXEC_PATH_PREFIX_COMPARATOR);
 
     // Keep deterministic ordering of bad actions.
-    Map<ActionAnalysisMetadata, ArtifactPrefixConflictException> badActions = new LinkedHashMap<>();
+    Map<ActionAnalysisMetadata, ActionConflictException> badActions = new LinkedHashMap<>();
     Iterator<Artifact> iter = Iterators.forArray(artifactArray);
 
     // Report an error for every derived artifact which is a strict prefix of another.
@@ -340,14 +354,14 @@ public final class Actions {
         // Check length first so that we only detect strict prefix conflicts. Equal exec paths are
         // possible from shared actions.
         if (pathJ.getPathString().length() > pathI.getPathString().length()
-            && pathJ.startsWith(pathI)) {
+            && pathJ.startsWith(pathI)
+            && !isRunfilesArtifactPair(artifactI, artifactJ)) {
           ActionAnalysisMetadata actionI =
               Preconditions.checkNotNull(actionGraph.getGeneratingAction(artifactI), artifactI);
           ActionAnalysisMetadata actionJ =
               Preconditions.checkNotNull(actionGraph.getGeneratingAction(artifactJ), artifactJ);
-          ArtifactPrefixConflictException exception =
-              new ArtifactPrefixConflictException(
-                  pathI, pathJ, actionI.getOwner().getLabel(), actionJ.getOwner().getLabel());
+          ActionConflictException exception =
+              ActionConflictException.createPrefix(artifactI, artifactJ, actionI, actionJ);
           badActions.put(actionI, exception);
           badActions.put(actionJ, exception);
         } else { // pathJ didn't have prefix pathI, so no conflict possible for pathI.
@@ -359,21 +373,24 @@ public final class Actions {
   }
 
   /**
-   * Returns the escaped name for a given relative path as a string. This takes
-   * a short relative path and turns it into a string suitable for use as a
-   * filename. Invalid filename characters are escaped with an '_' + a single
-   * character token.
+   * Returns the escaped name for a given relative path as a string. This takes a short relative
+   * path and turns it into a string suitable for use as a filename. Invalid filename characters are
+   * escaped with an '_' + a single character token.
    */
   public static String escapedPath(String path) {
     return PATH_ESCAPER.escape(path);
   }
 
   /**
-   * Returns a string that is usable as a unique path component for a label. It is guaranteed
-   * that no other label maps to this string.
+   * Returns a string that is usable as a unique path component for a label. It is guaranteed that
+   * no other label maps to this string.
    */
   public static String escapeLabel(Label label) {
-    return PATH_ESCAPER.escape(label.getPackageName() + ":" + label.getName());
+    String path = label.getPackageName() + ":" + label.getName();
+    if (!label.getRepository().isMain()) {
+      path = label.getRepository().getName() + "@" + path;
+    }
+    return PATH_ESCAPER.escape(path);
   }
 
   /**
@@ -384,5 +401,37 @@ public final class Actions {
     private ArtifactGeneratedByOtherRuleException(String message) {
       super(message);
     }
+  }
+
+  @Nullable
+  public static ActionAnalysisMetadata getGeneratingAction(WalkableGraph graph, Artifact artifact)
+      throws InterruptedException {
+    if (artifact.isSourceArtifact()) {
+      return null;
+    }
+
+    return getAction(graph, ((Artifact.DerivedArtifact) artifact).getGeneratingActionKey());
+  }
+
+  public static ActionAnalysisMetadata getAction(
+      WalkableGraph graph, ActionLookupData actionLookupData) throws InterruptedException {
+    var actionLookupKey = actionLookupData.getActionLookupKey();
+
+    // In analysis caching build with cache hits, deserialized ActionLookupValues do not contain
+    // actions, so the generating action for the artifact does not exist in the graph. It would
+    // require a reanalysis of the entire configured target subgraph to produce the action,
+    // nullifying the benefits of analysis caching.
+    //
+    // In practice this should be fine for critical path computation and execution graph log,
+    // because this represents a pruned subgraph for the action and there was no work done other
+    // than deserialization.
+    if (graph.getValue(actionLookupKey) instanceof ActionLookupValue actionLookupValue) {
+      // Not all ActionLookupKeys resolve to an ActionLookupValue, e.g. RemoteConfiguredTargetValue.
+      if (actionLookupValue.getNumActions() > 0) {
+        return actionLookupValue.getActions().get(actionLookupData.getActionIndex());
+      }
+    }
+
+    return null;
   }
 }

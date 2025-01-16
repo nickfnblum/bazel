@@ -52,11 +52,6 @@ msys*|mingw*|cygwin*)
   ;;
 esac
 
-if "$is_windows"; then
-  export MSYS_NO_PATHCONV=1
-  export MSYS2_ARG_CONV_EXCL="*"
-fi
-
 #### HELPER FUNCTIONS ##################################################
 
 if ! type try_with_timeout >&/dev/null; then
@@ -67,6 +62,8 @@ fi
 
 function set_up() {
   cd ${WORKSPACE_DIR}
+  add_rules_java MODULE.bazel
+
   mkdir -p "foo"
   cat > foo/foocc.py <<'EOF'
 import sys
@@ -194,6 +191,7 @@ EOF
 function test_incremental_err_reporting() {
   export DONT_SANITY_CHECK_SERIALIZATION=1
   cat > foo/BUILD <<EOF
+load("@rules_java//java:java_library.bzl", "java_library")
 genrule(
     name = "foo",
     outs = ["file.o"],

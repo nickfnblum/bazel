@@ -38,15 +38,32 @@ public class AspectValue extends BasicActionLookupValue
         : new AspectValueWithTransitivePackages(key, aspect, configuredAspect, transitivePackages);
   }
 
+  public static AspectValue createForAlias(
+      AspectKey key,
+      Aspect aspect,
+      ConfiguredAspect configuredAspect,
+      @Nullable NestedSet<Package> transitivePackages) {
+    return transitivePackages == null
+        ? new AspectValueForAlias(aspect, configuredAspect)
+        : new AspectValueWithTransitivePackagesForAlias(
+            key, aspect, configuredAspect, transitivePackages);
+  }
+
   // These variables are only non-final because they may be clear()ed to save memory. They are null
   // only after they are cleared except for transitivePackagesForPackageRootResolution.
   @Nullable private Aspect aspect;
   @Nullable private TransitiveInfoProviderMap providers;
 
+  // We store this in a boolean because the aspect variable from which it comes may be cleared to
+  // save memory.
+  private final boolean writesOutputToMasterLog;
+
   private AspectValue(Aspect aspect, ConfiguredAspect configuredAspect) {
     super(configuredAspect.getActions());
     this.aspect = checkNotNull(aspect);
     this.providers = configuredAspect.getProviders();
+    this.writesOutputToMasterLog =
+        aspect.getDefinition().getAttributes().containsKey("$print_to_master_log");
   }
 
   public AspectKey getKeyForTransitivePackageTracking() {
@@ -62,7 +79,21 @@ public class AspectValue extends BasicActionLookupValue
     return checkNotNull(providers);
   }
 
+  public boolean getWritesOutputToMasterLog() {
+    return writesOutputToMasterLog;
+  }
+
   @Override
+  public boolean isCleared() {
+    return this.aspect == null;
+  }
+
+  /**
+   * Clears data from this value.
+   *
+   * <p>Should only be used when user specifies --discard_analysis_cache. Must be called at most
+   * once per value, after which this object's other methods cannot be called.
+   */
   public void clear(boolean clearEverything) {
     if (clearEverything) {
       aspect = null;
@@ -91,7 +122,7 @@ public class AspectValue extends BasicActionLookupValue
     return getStringHelper().toString();
   }
 
-  private static final class AspectValueWithTransitivePackages extends AspectValue {
+  private static class AspectValueWithTransitivePackages extends AspectValue {
     @Nullable private transient NestedSet<Package> transitivePackages; // Null after clear().
     @Nullable private AspectKey key;
 
@@ -126,5 +157,27 @@ public class AspectValue extends BasicActionLookupValue
     protected ToStringHelper getStringHelper() {
       return super.getStringHelper().add("key", key).add("transitivePackages", transitivePackages);
     }
+  }
+
+  private static final class AspectValueForAlias extends AspectValue {
+    private AspectValueForAlias(Aspect aspect, ConfiguredAspect configuredAspect) {
+      super(aspect, configuredAspect);
+    }
+  }
+
+  private static final class AspectValueWithTransitivePackagesForAlias
+      extends AspectValueWithTransitivePackages {
+    private AspectValueWithTransitivePackagesForAlias(
+        AspectKey key,
+        Aspect aspect,
+        ConfiguredAspect configuredAspect,
+        NestedSet<Package> transitivePackages) {
+      super(key, aspect, configuredAspect, transitivePackages);
+    }
+  }
+
+  public static boolean isForAliasTarget(AspectValue aspectValue) {
+    return aspectValue instanceof AspectValueForAlias
+        || aspectValue instanceof AspectValueWithTransitivePackagesForAlias;
   }
 }

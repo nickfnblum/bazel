@@ -134,18 +134,13 @@ public final class BinTools {
           ? dirent.getName()
           : relative + "/" + dirent.getName();
       switch (dirent.getType()) {
-        case FILE:
-          result.add(childRelative);
-          break;
-
-        case DIRECTORY:
-          scanDirectoryRecursively(result, root.getChild(dirent.getName()), childRelative);
-          break;
-
-        default:
+        case FILE -> result.add(childRelative);
+        case DIRECTORY ->
+            scanDirectoryRecursively(result, root.getChild(dirent.getName()), childRelative);
+        default -> {
           // Nothing to do here -- we ignore symlinks, since they should not be present in the
           // embedded binaries tree.
-          break;
+        }
       }
     }
   }
@@ -170,7 +165,8 @@ public final class BinTools {
   public static final class PathActionInput extends VirtualActionInput {
     private final Path path;
     private final PathFragment execPath;
-    private FileArtifactValue metadata;
+    private volatile FileArtifactValue metadata;
+
     /** Contains the digest of the input once it has been written. */
     private volatile byte[] digest;
 
@@ -188,14 +184,17 @@ public final class BinTools {
 
     @Override
     @CanIgnoreReturnValue
-    protected byte[] atomicallyWriteTo(Path outputPath, String uniqueSuffix) throws IOException {
+    protected byte[] atomicallyWriteTo(Path outputPath) throws IOException {
       // The embedded tools do not change, but we need to be sure they're written out without race
-      // conditions.
+      // conditions. We rely on the fact that no two {@link PathActionInput} instances refer to the
+      // same file to use in-memory synchronization and avoid writing to a temporary file first.
       if (digest == null || !outputPath.exists()) {
         synchronized (this) {
           if (digest == null || !outputPath.exists()) {
             outputPath.getParentDirectory().createDirectoryAndParents();
             digest = writeTo(outputPath);
+            // Some of the embedded tools are executable.
+            outputPath.setExecutable(true);
           }
         }
       }
@@ -210,10 +209,14 @@ public final class BinTools {
     }
 
     @Override
-    public synchronized FileArtifactValue getMetadata() throws IOException {
+    public FileArtifactValue getMetadata() throws IOException {
       // We intentionally delay hashing until it is necessary.
       if (metadata == null) {
-        metadata = hash(path);
+        synchronized (this) {
+          if (metadata == null) {
+            metadata = hash(path);
+          }
+        }
       }
       return metadata;
     }

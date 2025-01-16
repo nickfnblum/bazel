@@ -35,6 +35,7 @@ import com.google.devtools.build.lib.repository.ExternalPackageHelper;
 import com.google.devtools.build.lib.rules.repository.RepositoryDirectoryValue;
 import com.google.devtools.build.lib.server.FailureDetails;
 import com.google.devtools.build.lib.util.DetailedExitCode;
+import com.google.devtools.build.lib.vfs.DetailedIOException;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.lib.vfs.RootedPath;
@@ -99,11 +100,19 @@ public class PackageLookupFunction implements SkyFunction {
 
     RepositoryName repoName = packageKey.getRepository();
     if (!repoName.isVisible()) {
+      String workspaceDeprecationMsg =
+          externalPackageHelper.getWorkspaceDeprecationErrorMessage(
+              env,
+              semantics.getBool(BuildLanguageOptions.ENABLE_WORKSPACE),
+              repoName.isOwnerRepoMainRepo());
+      if (env.valuesMissing()) {
+        return null;
+      }
       return new PackageLookupValue.NoRepositoryPackageLookupValue(
           repoName,
           String.format(
-              "No repository visible as '@%s' from %s",
-              repoName.getName(), repoName.getOwnerRepoDisplayString()));
+              "No repository visible as '@%s' from %s%s",
+              repoName.getName(), repoName.getOwnerRepoDisplayString(), workspaceDeprecationMsg));
     }
 
     if (deletedPackages.get().contains(packageKey)) {
@@ -122,13 +131,14 @@ public class PackageLookupFunction implements SkyFunction {
     }
 
     // Check .bazelignore file under main repository.
-    IgnoredPackagePrefixesValue ignoredPatternsValue =
-        (IgnoredPackagePrefixesValue) env.getValue(IgnoredPackagePrefixesValue.key());
+    IgnoredSubdirectoriesValue ignoredPatternsValue =
+        (IgnoredSubdirectoriesValue) env.getValue(IgnoredSubdirectoriesValue.key());
     if (ignoredPatternsValue == null) {
       return null;
     }
 
-    if (isPackageIgnored(packageKey, ignoredPatternsValue)) {
+    PathFragment packageFragment = packageKey.getPackageFragment();
+    if (ignoredPatternsValue.asIgnoredSubdirectories().matchingEntry(packageFragment) != null) {
       return PackageLookupValue.DELETED_PACKAGE_VALUE;
     }
 
@@ -151,7 +161,10 @@ public class PackageLookupFunction implements SkyFunction {
       for (Root root : pkgLocator.getPathEntries()) {
         message
             .append("\n - ")
-            .append(root.asPath().getRelative(packageKey.getPackageFragment()).getPathString());
+            .append(
+                pkgLocator.getPathEntries().size() == 1
+                    ? packageKey.getPackageFragment().getPathString()
+                    : root.asPath().getRelative(packageKey.getPackageFragment()).getPathString());
       }
       return message.toString();
     } else {
@@ -222,6 +235,23 @@ public class PackageLookupFunction implements SkyFunction {
                                       .SYMLINK_CYCLE_OR_INFINITE_EXPANSION))
                       .build())),
           Transience.PERSISTENT);
+    } catch (DetailedIOException e) {
+      String message =
+          "IO errors while looking for "
+              + basename
+              + " file reading "
+              + fileRootedPath.asPath()
+              + ": "
+              + e.getMessage();
+      throw new PackageLookupFunctionException(
+          new BuildFileNotFoundException(
+              packageIdentifier,
+              message,
+              DetailedExitCode.of(
+                  e.getDetailedExitCode().getFailureDetail().toBuilder()
+                      .setMessage(message)
+                      .build())),
+          e.getTransience());
     } catch (IOException e) {
       String message =
           "IO errors while looking for "
@@ -313,22 +343,12 @@ public class PackageLookupFunction implements SkyFunction {
     if (fileValue == null) {
       return null;
     }
+
     if (fileValue.isFile()) {
       return PackageLookupValue.success(buildFileRootedPath.getRoot(), buildFileName);
     }
 
     return PackageLookupValue.NO_BUILD_FILE_VALUE;
-  }
-
-  private static boolean isPackageIgnored(
-      PackageIdentifier id, IgnoredPackagePrefixesValue ignoredPatternsValue) {
-    PathFragment packageFragment = id.getPackageFragment();
-    for (PathFragment pattern : ignoredPatternsValue.getPatterns()) {
-      if (packageFragment.startsWith(pattern)) {
-        return true;
-      }
-    }
-    return false;
   }
 
   @Nullable
@@ -395,31 +415,33 @@ public class PackageLookupFunction implements SkyFunction {
     }
 
     // Check .bazelignore file after fetching the external repository.
-    IgnoredPackagePrefixesValue ignoredPatternsValue =
-        (IgnoredPackagePrefixesValue)
-            env.getValue(IgnoredPackagePrefixesValue.key(id.getRepository()));
+    IgnoredSubdirectoriesValue ignoredPatternsValue =
+        (IgnoredSubdirectoriesValue)
+            env.getValue(IgnoredSubdirectoriesValue.key(id.getRepository()));
     if (ignoredPatternsValue == null) {
       return null;
     }
 
-    if (isPackageIgnored(id, ignoredPatternsValue)) {
+    PathFragment packageFragment = id.getPackageFragment();
+    if (ignoredPatternsValue.asIgnoredSubdirectories().matchingEntry(packageFragment) != null) {
       return PackageLookupValue.DELETED_PACKAGE_VALUE;
     }
+
+    Root root = Root.fromPath(repositoryValue.getPath());
 
     // This checks for the build file names in the correct precedence order.
     for (BuildFileName buildFileName : buildFilesByPriority) {
       PathFragment buildFileFragment =
           id.getPackageFragment().getRelative(buildFileName.getFilenameFragment());
-      RootedPath buildFileRootedPath =
-          RootedPath.toRootedPath(Root.fromPath(repositoryValue.getPath()), buildFileFragment);
+      RootedPath buildFileRootedPath = RootedPath.toRootedPath(root, buildFileFragment);
       FileValue fileValue = getFileValue(buildFileRootedPath, env, packageIdentifier);
       if (fileValue == null) {
         return null;
       }
 
       if (fileValue.isFile()) {
-        return PackageLookupValue.success(
-            repositoryValue, Root.fromPath(repositoryValue.getPath()), buildFileName);
+        return PackageLookupValue.successfulExternalPackageLookup(
+            repositoryValue, root, buildFileName);
       }
     }
 

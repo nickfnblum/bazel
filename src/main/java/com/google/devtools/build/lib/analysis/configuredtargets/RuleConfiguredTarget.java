@@ -36,7 +36,6 @@ import com.google.devtools.build.lib.analysis.TransitiveInfoProviderMap;
 import com.google.devtools.build.lib.analysis.TransitiveInfoProviderMapBuilder;
 import com.google.devtools.build.lib.analysis.Util;
 import com.google.devtools.build.lib.analysis.config.ConfigMatchingProvider;
-import com.google.devtools.build.lib.analysis.config.RunUnder;
 import com.google.devtools.build.lib.analysis.starlark.StarlarkApiProvider;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
@@ -46,7 +45,10 @@ import com.google.devtools.build.lib.packages.Info;
 import com.google.devtools.build.lib.packages.OutputFile;
 import com.google.devtools.build.lib.packages.PackageSpecification.PackageGroupContents;
 import com.google.devtools.build.lib.packages.Provider;
+import com.google.devtools.build.lib.packages.RuleClassId;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
+import com.google.devtools.build.lib.skyframe.serialization.VisibleForSerialization;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.starlarkbuildapi.ActionApi;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.function.Consumer;
@@ -54,7 +56,7 @@ import javax.annotation.Nullable;
 import net.starlark.java.eval.Dict;
 import net.starlark.java.eval.Printer;
 import net.starlark.java.eval.Starlark;
-import net.starlark.java.eval.StarlarkSemantics;
+import net.starlark.java.eval.StarlarkThread;
 
 /**
  * A {@link com.google.devtools.build.lib.analysis.ConfiguredTarget} that is produced by a rule.
@@ -64,6 +66,7 @@ import net.starlark.java.eval.StarlarkSemantics;
  * works, see {@link com.google.devtools.build.lib.analysis.RuleConfiguredTargetFactory}.
  */
 @Immutable
+@AutoCodec
 public final class RuleConfiguredTarget extends AbstractConfiguredTarget {
 
   /** A set of this target's implicitDeps. */
@@ -79,12 +82,15 @@ public final class RuleConfiguredTarget extends AbstractConfiguredTarget {
 
   private final TransitiveInfoProviderMap providers;
   private final ImmutableMap<Label, ConfigMatchingProvider> configConditions;
-  private final String ruleClassString;
+  private final RuleClassId ruleClassId;
 
   /**
-   * Operations accessing actions, for example, executing them should be performed in the same Bazel
-   * instance that constructs the {@code RuleConfiguredTarget} instance and not on a Bazel instance
-   * that retrieves it remotely using deserialization.
+   * Operations accessing actions (for example, executing them or looking up metadata in them)
+   * should be performed in the same Bazel instance that constructs the {@code RuleConfiguredTarget}
+   * instance and not on a Bazel instance that retrieves the {@code RuleConfiguredTarget} remotely
+   * using deserialization, because actions will be null then.
+   *
+   * <p>Prefer using {@link #getActions()} which guards against null actions with a clear error.
    */
   @Nullable // Null if deserialized.
   private final transient ImmutableList<ActionAnalysisMetadata> actions;
@@ -92,10 +98,11 @@ public final class RuleConfiguredTarget extends AbstractConfiguredTarget {
   private RuleConfiguredTarget(
       ActionLookupKey actionLookupKey,
       NestedSet<PackageGroupContents> visibility,
+      boolean isCreatedInSymbolicMacro,
       TransitiveInfoProviderMap providers,
       ImmutableMap<Label, ConfigMatchingProvider> configConditions,
       ImmutableSet<ConfiguredTargetKey> implicitDeps,
-      String ruleClassString,
+      RuleClassId ruleClassId,
       ImmutableList<ActionAnalysisMetadata> actions) {
     super(actionLookupKey, visibility);
 
@@ -103,6 +110,12 @@ public final class RuleConfiguredTarget extends AbstractConfiguredTarget {
     // providers by passing them in.
     TransitiveInfoProviderMapBuilder providerBuilder =
         new TransitiveInfoProviderMapBuilder().addAll(providers);
+    if (isCreatedInSymbolicMacro) {
+      // Rather than add a boolean field to all RuleConfiguredTargets, we add a marker provider to
+      // just the ones that are created in symbolic macros. (This tradeoff may make less sense if
+      // many targets are created in macros.)
+      providerBuilder.add(CreatedInSymbolicMacroMarker.INSTANCE);
+    }
     checkState(providerBuilder.contains(RunfilesProvider.class), actionLookupKey);
     checkState(providerBuilder.contains(FileProvider.class), actionLookupKey);
     checkState(providerBuilder.contains(FilesToRunProvider.class), actionLookupKey);
@@ -110,15 +123,15 @@ public final class RuleConfiguredTarget extends AbstractConfiguredTarget {
     // Initialize every StarlarkApiProvider
     for (int i = 0; i < providers.getProviderCount(); i++) {
       Object obj = providers.getProviderInstanceAt(i);
-      if (obj instanceof StarlarkApiProvider) {
-        ((StarlarkApiProvider) obj).init(this);
+      if (obj instanceof StarlarkApiProvider starlarkApiProvider) {
+        starlarkApiProvider.init(this);
       }
     }
 
     this.providers = providerBuilder.build();
     this.configConditions = configConditions;
     this.implicitDeps = IMPLICIT_DEPS_INTERNER.intern(implicitDeps);
-    this.ruleClassString = ruleClassString;
+    this.ruleClassId = ruleClassId;
     this.actions = actions;
   }
 
@@ -129,22 +142,12 @@ public final class RuleConfiguredTarget extends AbstractConfiguredTarget {
     this(
         ruleContext.getOwner(),
         ruleContext.getVisibility(),
+        /* isCreatedInSymbolicMacro= */ ruleContext.getRule().isCreatedInSymbolicMacro(),
         providers,
         ruleContext.getConfigConditions(),
         Util.findImplicitDeps(ruleContext),
-        ruleContext.getRule().getRuleClass(),
+        ruleContext.getRule().getRuleClassObject().getRuleClassId(),
         actions);
-
-    // If this rule is the run_under target, then check that we have an executable; note that
-    // run_under is only set in the target configuration, and the target must also be analyzed for
-    // the target configuration.
-    RunUnder runUnder = ruleContext.getConfiguration().getRunUnder();
-    if (runUnder != null && getLabel().equals(runUnder.getLabel())) {
-      if (getProvider(FilesToRunProvider.class).getExecutable() == null) {
-        ruleContext.ruleError("run_under target " + runUnder.getLabel() + " is not executable");
-      }
-    }
-
     // Make sure that all declared output files are also created as artifacts. The
     // CachingAnalysisEnvironment makes sure that they all have generating actions.
     if (!ruleContext.hasErrors()) {
@@ -158,18 +161,56 @@ public final class RuleConfiguredTarget extends AbstractConfiguredTarget {
   public RuleConfiguredTarget(
       ActionLookupKey actionLookupKey,
       NestedSet<PackageGroupContents> visibility,
+      boolean isCreatedInSymbolicMacro,
       TransitiveInfoProviderMap providers,
       ImmutableMap<Label, ConfigMatchingProvider> configConditions,
-      String ruleClassString) {
+      RuleClassId ruleClassId) {
     this(
         actionLookupKey,
         visibility,
+        isCreatedInSymbolicMacro,
         providers,
         configConditions,
         ImmutableSet.of(),
-        ruleClassString,
+        ruleClassId,
         ImmutableList.of());
     checkState(providers.get(IncompatiblePlatformProvider.PROVIDER) != null, actionLookupKey);
+  }
+
+  /**
+   * @deprecated for serialization only
+   */
+  @Deprecated
+  @VisibleForSerialization
+  @AutoCodec.Instantiator
+  RuleConfiguredTarget(
+      ActionLookupKey lookupKey,
+      NestedSet<PackageGroupContents> visibility,
+      TransitiveInfoProviderMap providers,
+      ImmutableMap<Label, ConfigMatchingProvider> configConditions,
+      ImmutableSet<ConfiguredTargetKey> implicitDeps,
+      RuleClassId ruleClassId) {
+    super(lookupKey, visibility);
+    this.providers = providers;
+    this.configConditions = configConditions;
+    this.implicitDeps = implicitDeps;
+    this.ruleClassId = ruleClassId;
+    this.actions = null; // not currently serialized
+  }
+
+  /**
+   * Marker provider that indicates this target was instantiated within one or more symbolic macros.
+   */
+  private static class CreatedInSymbolicMacroMarker implements TransitiveInfoProvider {
+    public static final CreatedInSymbolicMacroMarker INSTANCE = new CreatedInSymbolicMacroMarker();
+
+    // Singleton.
+    private CreatedInSymbolicMacroMarker() {}
+  }
+
+  @Override
+  public boolean isCreatedInSymbolicMacro() {
+    return getProvider(CreatedInSymbolicMacroMarker.class) != null;
   }
 
   /** The configuration conditions that trigger this rule's configurable attributes. */
@@ -189,7 +230,11 @@ public final class RuleConfiguredTarget extends AbstractConfiguredTarget {
 
   @Override
   public String getRuleClassString() {
-    return ruleClassString;
+    return ruleClassId.name();
+  }
+
+  public RuleClassId getRuleClassId() {
+    return ruleClassId;
   }
 
   @Nullable
@@ -211,15 +256,15 @@ public final class RuleConfiguredTarget extends AbstractConfiguredTarget {
   @Override
   public String getErrorMessageForUnknownField(String name) {
     return String.format(
-        "%s (rule '%s') doesn't have provider '%s'", Starlark.repr(this), ruleClassString, name);
+        "%s (rule '%s') doesn't have provider '%s'", Starlark.repr(this), ruleClassId.name(), name);
   }
 
   @Override
   protected void addExtraStarlarkKeys(Consumer<String> result) {
     for (int i = 0; i < providers.getProviderCount(); i++) {
       Object classAt = providers.getProviderKeyAt(i);
-      if (classAt instanceof String) {
-        result.accept((String) classAt);
+      if (classAt instanceof String string) {
+        result.accept(string);
       }
     }
     result.accept(ACTIONS_FIELD_NAME);
@@ -236,7 +281,7 @@ public final class RuleConfiguredTarget extends AbstractConfiguredTarget {
       // Only expose actions which are legitimate Starlark values, otherwise they will later
       // cause a Bazel crash.
       // TODO(cparsons): Expose all actions to Starlark.
-      return actions.stream()
+      return getActions().stream()
           .filter(action -> action instanceof ActionApi)
           .collect(ImmutableList.toImmutableList());
     }
@@ -249,7 +294,7 @@ public final class RuleConfiguredTarget extends AbstractConfiguredTarget {
   }
 
   @Override
-  public void debugPrint(Printer printer, StarlarkSemantics semantics) {
+  public void debugPrint(Printer printer, StarlarkThread thread) {
     // Show the names of the provider keys that this target propagates.
     // Provider key names might potentially be *private* information, and thus a comprehensive
     // list of provider keys should not be exposed in any way other than for debug information.
@@ -281,7 +326,7 @@ public final class RuleConfiguredTarget extends AbstractConfiguredTarget {
         outputLabel,
         this);
     PathFragment relativeOutputPath = outputLabel.toPathFragment();
-    for (ActionAnalysisMetadata action : actions) {
+    for (ActionAnalysisMetadata action : getActions()) {
       for (Artifact output : action.getOutputs()) {
         if (output.getExecPath().endsWith(relativeOutputPath)) {
           return output;

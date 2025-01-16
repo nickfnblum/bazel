@@ -111,35 +111,37 @@ public class StarlarkBazelModule implements StarlarkValue {
       throws ExternalDepsException {
     LabelConverter labelConverter =
         new LabelConverter(
-            PackageIdentifier.create(module.getCanonicalRepoName(), PathFragment.EMPTY_FRAGMENT),
+            PackageIdentifier.create(repoMapping.ownerRepo(), PathFragment.EMPTY_FRAGMENT),
             repoMapping);
     ImmutableList<Tag> tags = usage == null ? ImmutableList.of() : usage.getTags();
     HashMap<String, ArrayList<TypeCheckedTag>> typeCheckedTags = new HashMap<>();
-    for (String tagClassName : extension.getTagClasses().keySet()) {
+    for (String tagClassName : extension.tagClasses().keySet()) {
       typeCheckedTags.put(tagClassName, new ArrayList<>());
     }
     for (Tag tag : tags) {
-      TagClass tagClass = extension.getTagClasses().get(tag.getTagName());
+      TagClass tagClass = extension.tagClasses().get(tag.getTagName());
       if (tagClass == null) {
         throw ExternalDepsException.withMessage(
             Code.BAD_MODULE,
             "The module extension defined at %s does not have a tag class named %s, but its use is"
                 + " attempted at %s%s",
-            extension.getLocation(),
+            extension.location(),
             tag.getTagName(),
             tag.getLocation(),
-            SpellChecker.didYouMean(tag.getTagName(), extension.getTagClasses().keySet()));
+            SpellChecker.didYouMean(tag.getTagName(), extension.tagClasses().keySet()));
       }
 
       // Now we need to type-check the attribute values and convert them into "build language types"
       // (for example, String to Label).
       typeCheckedTags
           .get(tag.getTagName())
-          .add(TypeCheckedTag.create(tagClass, tag, labelConverter));
+          .add(
+              TypeCheckedTag.create(
+                  tagClass, tag, labelConverter, module.getKey().toDisplayString()));
     }
     return new StarlarkBazelModule(
         module.getName(),
-        module.getVersion().getOriginal(),
+        module.getVersion().getNormalized(),
         new Tags(Maps.transformValues(typeCheckedTags, StarlarkList::immutableCopyOf)),
         module.getKey().equals(ModuleKey.ROOT));
   }

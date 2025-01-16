@@ -19,14 +19,17 @@ import static com.google.devtools.build.lib.concurrent.PaddedAddresses.createPad
 import static com.google.devtools.build.lib.concurrent.PaddedAddresses.getAlignedAddress;
 
 import com.google.devtools.build.lib.unsafe.UnsafeProvider;
+
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 import sun.misc.Unsafe;
 
 @RunWith(JUnit4.class)
+@SuppressWarnings("SunApi") // TODO: b/359688989 - clean this up
 public final class PaddedAddressesTest {
 
+  // TODO: b/386384684 - remove Unsafe usage
   @Test
   public void createdAddresses_areAligned() {
     long address = createPaddedBaseAddress(2);
