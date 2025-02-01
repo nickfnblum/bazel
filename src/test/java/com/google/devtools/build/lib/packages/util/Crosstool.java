@@ -582,7 +582,17 @@ public final class Crosstool {
                 // We add an empty :malloc target in case we need it.
                 "cc_library(name = 'malloc')",
                 // Fake targets to get us through loading/analysis.
-                "exports_files(['grep-includes', 'link_dynamic_library'])");
+                "exports_files(['grep-includes', 'link_dynamic_library'])",
+                "",
+                "filegroup(",
+                "    name = 'aggregate-ddi',",
+                "    srcs = ['aggregate-ddi.sh'],",
+                ")",
+                "",
+                "filegroup(",
+                "    name = 'generate-modmap',",
+                "    srcs = ['generate-modmap.sh'],",
+                ")");
 
     config.create(crosstoolTop + "/mock_version/x86/bin/gcc");
     config.create(crosstoolTop + "/mock_version/x86/bin/ld");
@@ -590,7 +600,7 @@ public final class Crosstool {
     config.overwrite(crosstoolTop + "/cc_toolchain_config.bzl", ccToolchainConfigFileContents);
     config.create(crosstoolTop + "/crosstool.cppmap", "module crosstool {}");
     config.append(
-        "WORKSPACE",
+        "MODULE.bazel",
         String.format(
             "register_toolchains('%s:all')",
             crosstoolTopLabel.getPackageIdentifier().getCanonicalForm()));
@@ -598,6 +608,8 @@ public final class Crosstool {
     config.create(crosstoolTop + "/grep-includes");
     config.create(crosstoolTop + "/build_interface_so");
     config.create(crosstoolTop + "/link_dynamic_library");
+    config.create(crosstoolTop + "/aggregate-ddi.sh");
+    config.create(crosstoolTop + "/generate-modmap.sh");
   }
 
   public void writeOSX() throws IOException {
@@ -663,7 +675,7 @@ public final class Crosstool {
       }
 
       crosstoolBuild.add(
-          "apple_cc_toolchain(",
+          "cc_toolchain(",
           "    name = 'cc-compiler-" + toolchainConfig.getTargetCpu() + "',",
           "    toolchain_identifier = '" + toolchainConfig.getTargetCpu() + "',",
           "    toolchain_config = ':"
@@ -702,7 +714,7 @@ public final class Crosstool {
         MockObjcSupport.DEFAULT_OSX_CROSSTOOL_DIR + "/BUILD",
         Joiner.on("\n").join(crosstoolBuild.build()));
     config.append(
-        "WORKSPACE",
+        "MODULE.bazel",
         "register_toolchains('//" + MockObjcSupport.DEFAULT_OSX_CROSSTOOL_DIR + ":all')");
     config.overwrite(crosstoolTop + "/cc_toolchain_config.bzl", ccToolchainConfigFileContents);
   }

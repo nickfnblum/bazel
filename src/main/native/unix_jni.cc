@@ -22,6 +22,7 @@
 #include <limits.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
@@ -30,6 +31,7 @@
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 #include <utime.h>
 
@@ -65,7 +67,8 @@ static void PostException(JNIEnv *env, const char *exception_classname,
     success = env->ThrowNew(exception_class, message.c_str()) == 0;
   }
   if (!success) {
-    BAZEL_LOG(FATAL) << "Failure to throw java error: " << message.c_str();
+    BAZEL_LOG(FATAL) << "Failed to throw Java exception from JNI: "
+                     << message.c_str();
   }
 }
 
@@ -294,13 +297,6 @@ Java_com_google_devtools_build_lib_unix_NativePosixFiles_symlink(JNIEnv *env,
 }
 
 namespace {
-static jclass file_status_class = nullptr;
-static jclass errno_file_status_class = nullptr;
-static jmethodID file_status_class_ctor = nullptr;
-static jmethodID errno_file_status_class_no_error_ctor = nullptr;
-static jmethodID errno_file_status_class_errorno_ctor = nullptr;
-static jclass dirents_class = nullptr;
-static jmethodID dirents_ctor = nullptr;
 
 static jclass makeStaticClass(JNIEnv *env, const char *name) {
   jclass lookup_result = env->FindClass(name);
@@ -315,42 +311,19 @@ static jmethodID getConstructorID(JNIEnv *env, jclass clazz,
   return method;
 }
 
-static jobject NewFileStatus(JNIEnv *env,
-                             const portable_stat_struct &stat_ref) {
+static jobject NewUnixFileStatus(JNIEnv *env,
+                                 const portable_stat_struct &stat_ref) {
+  static const jclass file_status_class =
+      makeStaticClass(env, "com/google/devtools/build/lib/unix/UnixFileStatus");
+  static const jmethodID file_status_class_ctor =
+      getConstructorID(env, file_status_class, "(IJJJJ)V");
   return env->NewObject(
-      file_status_class, file_status_class_ctor, stat_ref.st_mode,
-      StatSeconds(stat_ref, STAT_ATIME), StatNanoSeconds(stat_ref, STAT_ATIME),
-      StatSeconds(stat_ref, STAT_MTIME), StatNanoSeconds(stat_ref, STAT_MTIME),
-      StatSeconds(stat_ref, STAT_CTIME), StatNanoSeconds(stat_ref, STAT_CTIME),
-      static_cast<jlong>(stat_ref.st_size), static_cast<int>(stat_ref.st_dev),
+      file_status_class, file_status_class_ctor,
+      static_cast<jint>(stat_ref.st_mode),
+      static_cast<jlong>(StatEpochMilliseconds(stat_ref, STAT_MTIME)),
+      static_cast<jlong>(StatEpochMilliseconds(stat_ref, STAT_CTIME)),
+      static_cast<jlong>(stat_ref.st_size),
       static_cast<jlong>(stat_ref.st_ino));
-}
-
-static jobject NewErrnoFileStatus(JNIEnv *env,
-                                  int saved_errno,
-                                  const portable_stat_struct &stat_ref) {
-  if (saved_errno != 0) {
-    return env->NewObject(errno_file_status_class,
-                          errno_file_status_class_errorno_ctor, saved_errno);
-  }
-  return env->NewObject(
-      errno_file_status_class, errno_file_status_class_no_error_ctor,
-      stat_ref.st_mode, StatSeconds(stat_ref, STAT_ATIME),
-      StatNanoSeconds(stat_ref, STAT_ATIME), StatSeconds(stat_ref, STAT_MTIME),
-      StatNanoSeconds(stat_ref, STAT_MTIME), StatSeconds(stat_ref, STAT_CTIME),
-      StatNanoSeconds(stat_ref, STAT_CTIME),
-      static_cast<jlong>(stat_ref.st_size), static_cast<int>(stat_ref.st_dev),
-      static_cast<jlong>(stat_ref.st_ino));
-}
-
-static void SetIntField(JNIEnv *env,
-                        const jclass &clazz,
-                        const jobject &object,
-                        const char *name,
-                        int val) {
-  jfieldID fid = env->GetFieldID(clazz, name, "I");
-  BAZEL_CHECK_NE(fid, nullptr);
-  env->SetIntField(object, fid, val);
 }
 
 // RAII class for jstring.
@@ -370,69 +343,37 @@ class JStringLatin1Holder {
 
 }  // namespace
 
-extern "C" JNIEXPORT void JNICALL
-Java_com_google_devtools_build_lib_unix_NativePosixFiles_initJNIClasses(
-    JNIEnv *env, jclass clazz) {
-  file_status_class =
-      makeStaticClass(env, "com/google/devtools/build/lib/unix/FileStatus");
-  errno_file_status_class = makeStaticClass(
-      env, "com/google/devtools/build/lib/unix/ErrnoFileStatus");
-  file_status_class_ctor =
-      getConstructorID(env, file_status_class, "(IIIIIIIJIJ)V");
-  errno_file_status_class_no_error_ctor =
-      getConstructorID(env, errno_file_status_class, "(IIIIIIIJIJ)V");
-  errno_file_status_class_errorno_ctor =
-      getConstructorID(env, errno_file_status_class, "(I)V");
-  dirents_class = makeStaticClass(
-      env, "com/google/devtools/build/lib/unix/NativePosixFiles$Dirents");
-  dirents_ctor =
-      getConstructorID(env, dirents_class, "([Ljava/lang/String;[B)V");
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_google_devtools_build_lib_unix_ErrnoFileStatus_00024ErrnoConstants_initErrnoConstants(  // NOLINT
-  JNIEnv *env, jobject errno_constants) {
-  jclass clazz = env->GetObjectClass(errno_constants);
-  SetIntField(env, clazz, errno_constants, "errnoENOENT", ENOENT);
-  SetIntField(env, clazz, errno_constants, "errnoEACCES", EACCES);
-  SetIntField(env, clazz, errno_constants, "errnoELOOP", ELOOP);
-  SetIntField(env, clazz, errno_constants, "errnoENOTDIR", ENOTDIR);
-  SetIntField(env, clazz, errno_constants, "errnoENAMETOOLONG", ENAMETOOLONG);
-  SetIntField(env, clazz, errno_constants, "errnoENODATA", ENODATA);
-}
-
 namespace {
 static jobject StatCommon(JNIEnv *env, jstring path,
                           int (*stat_function)(const char *,
                                                portable_stat_struct *),
-                          bool should_throw) {
+                          char error_handling) {
+  JStringLatin1Holder path_chars(env, path);
   portable_stat_struct statbuf;
-  const char *path_chars = GetStringLatin1Chars(env, path);
   int r;
-  int saved_errno = 0;
   while ((r = stat_function(path_chars, &statbuf)) == -1 && errno == EINTR) { }
   if (r == -1) {
-    // Save errno immediately, before we do any other syscalls
-    saved_errno = errno;
+    // Save errno immediately, before we do any other syscalls.
+    int saved_errno = errno;
 
-    // EACCES ENOENT ENOTDIR ELOOP -> IOException
-    // ENAMETOOLONGEFAULT          -> RuntimeException
-    // ENOMEM                      -> OutOfMemoryError
-
+    // Throw a RuntimeException if errno suggests a programming error.
     if (PostRuntimeException(env, saved_errno, path_chars)) {
-      ReleaseStringLatin1Chars(path_chars);
-      return nullptr;
-    } else if (should_throw) {
-      PostException(env, saved_errno, path_chars);
-      ReleaseStringLatin1Chars(path_chars);
       return nullptr;
     }
-  }
-  ReleaseStringLatin1Chars(path_chars);
 
-  return should_throw
-    ? NewFileStatus(env, statbuf)
-    : NewErrnoFileStatus(env, saved_errno, statbuf);
+    // Throw an IOException if requested by the error handling mode.
+    if (error_handling == 'a' ||
+        (error_handling == 'f' && saved_errno != ENOENT &&
+         saved_errno != ENOTDIR)) {
+      PostException(env, saved_errno, path_chars);
+      return nullptr;
+    }
+
+    // Otherwise, return null.
+    return nullptr;
+  }
+
+  return NewUnixFileStatus(env, statbuf);
 }
 }  // namespace
 
@@ -443,10 +384,9 @@ static jobject StatCommon(JNIEnv *env, jstring path,
  * Throws:    java.io.IOException
  */
 extern "C" JNIEXPORT jobject JNICALL
-Java_com_google_devtools_build_lib_unix_NativePosixFiles_stat(JNIEnv *env,
-                                                 jclass clazz,
-                                                 jstring path) {
-  return StatCommon(env, path, portable_stat, true);
+Java_com_google_devtools_build_lib_unix_NativePosixFiles_stat(
+    JNIEnv *env, jclass clazz, jstring path, jchar error_handling) {
+  return StatCommon(env, path, portable_stat, error_handling);
 }
 
 /*
@@ -456,64 +396,32 @@ Java_com_google_devtools_build_lib_unix_NativePosixFiles_stat(JNIEnv *env,
  * Throws:    java.io.IOException
  */
 extern "C" JNIEXPORT jobject JNICALL
-Java_com_google_devtools_build_lib_unix_NativePosixFiles_lstat(JNIEnv *env,
-                                                  jclass clazz,
-                                                  jstring path) {
-  return StatCommon(env, path, portable_lstat, true);
+Java_com_google_devtools_build_lib_unix_NativePosixFiles_lstat(
+    JNIEnv *env, jclass clazz, jstring path, jchar error_handling) {
+  return StatCommon(env, path, portable_lstat, error_handling);
 }
 
 /*
  * Class:     com.google.devtools.build.lib.unix.NativePosixFiles
- * Method:    statNullable
- * Signature: (Ljava/lang/String;)Lcom/google/devtools/build/lib/unix/FileStatus;
- */
-extern "C" JNIEXPORT jobject JNICALL
-Java_com_google_devtools_build_lib_unix_NativePosixFiles_errnoStat(JNIEnv *env,
-                                                      jclass clazz,
-                                                      jstring path) {
-  return StatCommon(env, path, portable_stat, false);
-}
-
-/*
- * Class:     com.google.devtools.build.lib.unix.NativePosixFiles
- * Method:    lstatNullable
- * Signature: (Ljava/lang/String;)Lcom/google/devtools/build/lib/unix/FileStatus;
- */
-extern "C" JNIEXPORT jobject JNICALL
-Java_com_google_devtools_build_lib_unix_NativePosixFiles_errnoLstat(JNIEnv *env,
-                                                       jclass clazz,
-                                                       jstring path) {
-  return StatCommon(env, path, portable_lstat, false);
-}
-
-/*
- * Class:     com.google.devtools.build.lib.unix.NativePosixFiles
- * Method:    utime
- * Signature: (Ljava/lang/String;ZII)V
+ * Method:    utimensat
+ * Signature: (Ljava/lang/String;ZJ)V
  * Throws:    java.io.IOException
  */
 extern "C" JNIEXPORT void JNICALL
-Java_com_google_devtools_build_lib_unix_NativePosixFiles_utime(JNIEnv *env,
-                                                  jclass clazz,
-                                                  jstring path,
-                                                  jboolean now,
-                                                  jint modtime) {
+Java_com_google_devtools_build_lib_unix_NativePosixFiles_utimensat(
+    JNIEnv *env, jclass clazz, jstring path, jboolean now, jlong millis) {
   const char *path_chars = GetStringLatin1Chars(env, path);
-#ifdef __linux
-  struct timespec spec[2] = {{0, UTIME_OMIT}, {modtime, now ? UTIME_NOW : 0}};
+  int64_t sec = millis / 1000;
+  int32_t nsec = (millis % 1000) * 1000000;
+  struct timespec spec[2] = {
+      // Do not set atime.
+      {0, UTIME_OMIT},
+      // Set mtime to now if `now` is true, otherwise to the specified time.
+      {sec, now ? UTIME_NOW : nsec},
+  };
   if (::utimensat(AT_FDCWD, path_chars, spec, 0) == -1) {
     PostException(env, errno, path_chars);
   }
-#else
-  struct utimbuf buf = { modtime, modtime };
-  struct utimbuf *bufptr = now ? nullptr : &buf;
-  if (::utime(path_chars, bufptr) == -1) {
-    // EACCES ENOENT EMULTIHOP ELOOP EINTR
-    // ENOTDIR ENOLINK EPERM EROFS   -> IOException
-    // EFAULT ENAMETOOLONG           -> RuntimeException
-    PostException(env, errno, path_chars);
-  }
-#endif
   ReleaseStringLatin1Chars(path_chars);
 }
 
@@ -580,20 +488,25 @@ Java_com_google_devtools_build_lib_unix_NativePosixFiles_mkdirWritable(
       PostException(env, errno, path_chars);
       return false;
     }
-    // directory does not exist.
-    if (::mkdir(path_chars, 0755) == -1) {
+    // Directory does not exist.
+    // Use 0777 so that the permissions can be overridden by umask(2).
+    if (::mkdir(path_chars, 0777) == -1) {
       PostException(env, errno, path_chars);
     }
     return true;
   }
-  // path already exists
+  // Path already exists, but might not be a directory.
   if (!S_ISDIR(statbuf.st_mode)) {
     PostException(env, ENOTDIR, path_chars);
     return false;
   }
-  // Make sure the mode is correct.
-  if ((statbuf.st_mode & 0755) != 0755 && ::chmod(path_chars, 0755) == -1) {
-    PostException(env, errno, path_chars);
+  // Make sure the permissions are correct.
+  // Avoid touching permissions for group/other, which may have been overridden
+  // by umask(2) when this directory was originally created.
+  if ((statbuf.st_mode & S_IRWXU) != S_IRWXU) {
+    if (::chmod(path_chars, statbuf.st_mode | S_IRWXU) == -1) {
+      PostException(env, errno, path_chars);
+    }
   }
   return false;
 }
@@ -684,6 +597,10 @@ namespace {
 static jobject NewDirents(JNIEnv *env,
                           jobjectArray names,
                           jbyteArray types) {
+  static const jclass dirents_class = makeStaticClass(
+      env, "com/google/devtools/build/lib/unix/NativePosixFiles$Dirents");
+  static const jmethodID dirents_ctor =
+      getConstructorID(env, dirents_class, "([Ljava/lang/String;[B)V");
   return env->NewObject(dirents_class, dirents_ctor, names, types);
 }
 

@@ -51,7 +51,9 @@ public class BzlLoadCycleReporter implements CyclesReporter.SingleCycleReporter 
       SkyFunctions.isSkyFunction(SkyFunctions.BZL_LOAD);
 
   private static final Predicate<SkyKey> IS_BZLMOD_EXTENSION =
-      SkyFunctions.isSkyFunction(SkyFunctions.SINGLE_EXTENSION_EVAL);
+      Predicates.or(
+          SkyFunctions.isSkyFunction(SkyFunctions.SINGLE_EXTENSION),
+          SkyFunctions.isSkyFunction(SkyFunctions.SINGLE_EXTENSION_EVAL));
 
   private static void requestRepoDefinitions(
       ExtendedEventHandler eventHandler, Iterable<SkyKey> repos) {
@@ -105,9 +107,7 @@ public class BzlLoadCycleReporter implements CyclesReporter.SingleCycleReporter 
             }
             Preconditions.checkArgument(input.argument() instanceof ModuleExtensionId);
             ModuleExtensionId id = (ModuleExtensionId) input.argument();
-            return String.format(
-                "extension '%s' defined in %s",
-                id.getExtensionName(), id.getBzlFileLabel().getCanonicalForm());
+            return "module extension " + id;
           };
 
       StringBuilder cycleMessage =

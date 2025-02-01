@@ -14,18 +14,17 @@
 
 package com.google.devtools.build.lib.analysis;
 
-import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Preconditions.checkArgument;
 
 import com.google.devtools.build.lib.actions.Artifact;
-import com.google.devtools.build.lib.actions.EmptyRunfilesSupplier;
-import com.google.devtools.build.lib.actions.RunfilesSupplier;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.starlarkbuildapi.FilesToRunProviderApi;
 import javax.annotation.Nullable;
+import net.starlark.java.eval.Printer;
+import net.starlark.java.eval.StarlarkThread;
 
 /** Returns information about executables produced by a target and the files needed to run it. */
 @Immutable
@@ -72,9 +71,8 @@ public class FilesToRunProvider implements TransitiveInfoProvider, FilesToRunPro
    * Returns artifacts needed to run the executable for this target.
    *
    * <p>This method should not be used because its semantics are complicated and confusing. Instead,
-   * either use {@link #getExecutable()} if only the executable is desired, {@link
-   * #getRunfilesSupplier()} if you also want its runfiles or {@link #getRunfilesSupport()} if you
-   * know what you are doing and it's something very arcane.
+   * either use {@link #getExecutable()} or {@link #getRunfilesSupport()} if you know what you are
+   * doing and it's something very arcane.
    */
   @Deprecated
   public final NestedSet<Artifact> getFilesToRun() {
@@ -110,9 +108,15 @@ public class FilesToRunProvider implements TransitiveInfoProvider, FilesToRunPro
     return runfilesSupport != null ? runfilesSupport.getRepoMappingManifest() : null;
   }
 
-  /** Returns a {@link RunfilesSupplier} encapsulating runfiles for this tool. */
-  public final RunfilesSupplier getRunfilesSupplier() {
-    return firstNonNull(getRunfilesSupport(), EmptyRunfilesSupplier.INSTANCE);
+  @Override
+  public void debugPrint(Printer printer, StarlarkThread thread) {
+    printer.append("FilesToRunProvider(executable = ");
+    printer.debugPrint(getExecutable(), thread);
+    printer.append(", repo_mapping_manifest = ");
+    printer.debugPrint(getRepoMappingManifest(), thread);
+    printer.append(", runfiles_manifest = ");
+    printer.debugPrint(getRunfilesManifest(), thread);
+    printer.append(")");
   }
 
   /** A single executable. */

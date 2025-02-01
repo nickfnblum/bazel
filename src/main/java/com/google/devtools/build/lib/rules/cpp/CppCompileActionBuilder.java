@@ -84,8 +84,8 @@ public final class CppCompileActionBuilder {
       CppSemantics cppSemantics) {
 
     ActionOwner actionOwner = null;
-    if (actionConstructionContext instanceof RuleContext
-        && ((RuleContext) actionConstructionContext).useAutoExecGroups()) {
+    if (actionConstructionContext instanceof RuleContext ruleContext
+        && ruleContext.useAutoExecGroups()) {
       actionOwner = actionConstructionContext.getActionOwner(cppSemantics.getCppToolchainType());
     }
 
@@ -246,7 +246,8 @@ public final class CppCompileActionBuilder {
     }
   }
 
-  static final class UnconfiguredActionConfigException extends Exception {
+  /** Exception thrown when the action is not configured in the toolchain. */
+  public static final class UnconfiguredActionConfigException extends Exception {
     private UnconfiguredActionConfigException(String actionName) {
       super(String.format("Expected action_config for '%s' to be configured", actionName));
     }

@@ -22,7 +22,7 @@ import com.google.devtools.build.lib.actions.DigestOfDirectoryException;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
 import com.google.devtools.build.lib.actions.InputMetadataProvider;
 import com.google.devtools.build.lib.actions.RunfilesArtifactValue;
-import com.google.devtools.build.lib.actions.RunfilesSupplier.RunfilesTree;
+import com.google.devtools.build.lib.actions.RunfilesTree;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.Symlinks;
@@ -58,7 +58,7 @@ public class SingleBuildFileCache implements InputMetadataProvider {
   }
 
   @Override
-  public FileArtifactValue getInputMetadata(ActionInput input) throws IOException {
+  public FileArtifactValue getInputMetadataChecked(ActionInput input) throws IOException {
     // TODO(lberki): It would be nice to assert that only source files are passed here.
     // Unfortunately, that's not quite true at the moment and an unknown amount of work would be
     // needed to make that true.

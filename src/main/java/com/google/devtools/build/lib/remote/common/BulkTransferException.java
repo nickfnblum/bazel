@@ -17,6 +17,10 @@ import static com.google.common.base.Preconditions.checkState;
 
 import com.google.common.base.Joiner;
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * Exception which represents a collection of IOExceptions for the purpose of distinguishing remote
@@ -45,10 +49,10 @@ public class BulkTransferException extends IOException {
    * filter and record whether all suppressed exceptions are CacheNotFoundExceptions.
    */
   public void add(IOException e) {
-    if (e instanceof BulkTransferException) {
-      for (Throwable t : ((BulkTransferException) e).getSuppressed()) {
+    if (e instanceof BulkTransferException bulkTransferException) {
+      for (Throwable t : bulkTransferException.getSuppressed()) {
         checkState(t instanceof IOException);
-        add((IOException) t);
+        add(bulkTransferException);
       }
       return;
     }
@@ -62,8 +66,8 @@ public class BulkTransferException extends IOException {
   }
 
   public static boolean anyCausedByCacheNotFoundException(Throwable e) {
-    return e instanceof BulkTransferException
-        && ((BulkTransferException) e).anyCausedByCacheNotFoundException();
+    return e instanceof BulkTransferException bulkTransferException
+        && bulkTransferException.anyCausedByCacheNotFoundException();
   }
 
   public boolean allCausedByCacheNotFoundException() {
@@ -71,19 +75,33 @@ public class BulkTransferException extends IOException {
   }
 
   public static boolean allCausedByCacheNotFoundException(Throwable e) {
-    return e instanceof BulkTransferException
-        && ((BulkTransferException) e).allCausedByCacheNotFoundException();
+    return e instanceof BulkTransferException bulkTransferException
+        && bulkTransferException.allCausedByCacheNotFoundException();
   }
 
   @Override
   public String getMessage() {
-    // If there is only one suppressed exception, displaying that in the message should be helpful.
-    if (super.getSuppressed().length == 1) {
-      return super.getSuppressed()[0].getMessage();
+    // Only report unique messages to avoid flooding the user, e.g. in case a remote cache server is
+    // unavailable
+    // and causing several identical messages. Also sort the messages, for more deterministic
+    // result. All of this allows
+    // more efficient event deduplication when reporting the returned aggregated message.
+    List<String> uniqueSortedMessages =
+        Arrays.stream(super.getSuppressed())
+            .map(Throwable::getMessage)
+            .filter(Objects::nonNull)
+            .sorted()
+            .distinct()
+            .collect(Collectors.toList());
+
+    switch (uniqueSortedMessages.size()) {
+      case 0:
+        return "Unknown error during bulk transfer";
+      case 1:
+        return uniqueSortedMessages.iterator().next();
+      default:
+        return "Multiple errors during bulk transfer:\n"
+            + Joiner.on('\n').join(uniqueSortedMessages);
     }
-    String errorSummary =
-        String.format("%d errors during bulk transfer:", super.getSuppressed().length);
-    String combinedSuberrors = Joiner.on('\n').join(super.getSuppressed());
-    return Joiner.on('\n').join(errorSummary, combinedSuberrors);
   }
 }

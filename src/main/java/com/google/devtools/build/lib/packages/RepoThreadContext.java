@@ -14,50 +14,59 @@
 
 package com.google.devtools.build.lib.packages;
 
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.devtools.build.lib.cmdline.StarlarkThreadContext;
+import java.util.Collection;
+import java.util.Map;
 import net.starlark.java.eval.EvalException;
 import net.starlark.java.eval.Starlark;
 import net.starlark.java.eval.StarlarkThread;
 
 /** Context object for a Starlark thread evaluating the REPO.bazel file. */
-public class RepoThreadContext {
-  private final LabelConverter labelConverter;
-  private PackageArgs packageArgs = PackageArgs.EMPTY;
+public class RepoThreadContext extends StarlarkThreadContext {
+  private ImmutableMap<String, Object> packageArgsMap = ImmutableMap.of();
   private boolean repoFunctionCalled = false;
+
+  private ImmutableList<String> ignoredDirectories = ImmutableList.of();
+  private boolean ignoredDirectoriesSet = false;
 
   public static RepoThreadContext fromOrFail(StarlarkThread thread, String what)
       throws EvalException {
-    RepoThreadContext context = thread.getThreadLocal(RepoThreadContext.class);
-    if (context == null) {
-      throw Starlark.errorf("%s can only be called from REPO.bazel", what);
+    StarlarkThreadContext context = thread.getThreadLocal(StarlarkThreadContext.class);
+    if (context instanceof RepoThreadContext c) {
+      return c;
     }
-    return context;
+    throw Starlark.errorf("%s can only be called from REPO.bazel", what);
   }
 
-  public void storeInThread(StarlarkThread thread) {
-    thread.setThreadLocal(RepoThreadContext.class, this);
-  }
-
-  public RepoThreadContext(LabelConverter labelConverter) {
-    this.labelConverter = labelConverter;
-  }
-
-  public LabelConverter getLabelConverter() {
-    return labelConverter;
+  public RepoThreadContext() {
+    super(() -> null);
   }
 
   public boolean isRepoFunctionCalled() {
     return repoFunctionCalled;
   }
 
-  public void setRepoFunctionCalled() {
+  public void setPackageArgsMap(Map<String, Object> kwargs) {
     repoFunctionCalled = true;
+    this.packageArgsMap = ImmutableMap.copyOf(kwargs);
   }
 
-  public void setPackageArgs(PackageArgs packageArgs) {
-    this.packageArgs = packageArgs;
+  public ImmutableMap<String, Object> getPackageArgsMap() {
+    return packageArgsMap;
   }
 
-  public PackageArgs getPackageArgs() {
-    return packageArgs;
+  public void setIgnoredDirectories(Collection<String> ignoredDirectories) throws EvalException {
+    ignoredDirectoriesSet = true;
+    this.ignoredDirectories = ImmutableList.copyOf(ignoredDirectories);
+  }
+
+  public boolean isIgnoredDirectoriesSet() {
+    return ignoredDirectoriesSet;
+  }
+
+  public ImmutableList<String> getIgnoredDirectories() {
+    return ignoredDirectories;
   }
 }

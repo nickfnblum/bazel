@@ -61,12 +61,13 @@ import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
 import com.google.devtools.build.lib.cmdline.RepositoryMapping;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.events.ExtendedEventHandler.FetchProgress;
+import com.google.devtools.build.lib.exec.util.FakeActionInputFileCache;
 import com.google.devtools.build.lib.pkgcache.LoadingPhaseCompleteEvent;
 import com.google.devtools.build.lib.remote.Store;
 import com.google.devtools.build.lib.runtime.SkymeldUiStateTracker.BuildStatus;
 import com.google.devtools.build.lib.runtime.UiStateTracker.StrategyIds;
+import com.google.devtools.build.lib.skyframe.AnalysisProgressReceiver;
 import com.google.devtools.build.lib.skyframe.ConfigurationPhaseStartedEvent;
-import com.google.devtools.build.lib.skyframe.ConfiguredTargetProgressReceiver;
 import com.google.devtools.build.lib.skyframe.LoadingPhaseStartedEvent;
 import com.google.devtools.build.lib.skyframe.PackageProgressReceiver;
 import com.google.devtools.build.lib.skyframe.TopLevelStatusEvents.TestAnalyzedEvent;
@@ -209,7 +210,7 @@ public class UiStateTrackerTest extends FoundationTestCase {
         Label.parseCanonical("//foo:a"),
         new Location("dummy-file", 0, 0),
         /* targetKind= */ "",
-        /* mnemonic= */ "",
+        /* buildConfigurationMnemonic= */ "",
         /* configurationChecksum= */ "",
         new BuildConfigurationEvent(
             BuildEventStreamProtos.BuildEventId.getDefaultInstance(),
@@ -225,7 +226,9 @@ public class UiStateTrackerTest extends FoundationTestCase {
         new LoadingPhaseCompleteEvent(ImmutableSet.of(), ImmutableSet.of(), MOCK_REPO_MAPPING));
     if (this.isSkymeld) {
       // SkymeldUiStateTracker needs to be in the configuration phase before the execution phase.
-      ((SkymeldUiStateTracker) uiStateTracker).buildStatus = BuildStatus.ANALYSIS_COMPLETE;
+      ((SkymeldUiStateTracker) uiStateTracker)
+          .setBuildStatusForTestingOnly(BuildStatus.ANALYSIS_COMPLETE);
+      uiStateTracker.executionPhaseStarted();
     } else {
       String unused = uiStateTracker.analysisComplete();
     }
@@ -274,13 +277,10 @@ public class UiStateTrackerTest extends FoundationTestCase {
         new LoadingPhaseCompleteEvent(ImmutableSet.of(), ImmutableSet.of(), MOCK_REPO_MAPPING));
     String additionalMessage = "5 targets";
     stateTracker.additionalMessage = additionalMessage;
-    String configuredTargetProgressString = "5 targets configured";
-    ConfiguredTargetProgressReceiver configuredTargetProgressReceiver =
-        mock(ConfiguredTargetProgressReceiver.class);
-    when(configuredTargetProgressReceiver.getProgressString())
-        .thenReturn(configuredTargetProgressString);
-    stateTracker.configurationStarted(
-        new ConfigurationPhaseStartedEvent(configuredTargetProgressReceiver));
+    String analysisProgressString = "5 targets and 0 aspects configured";
+    AnalysisProgressReceiver analysisProgressReceiver = mock(AnalysisProgressReceiver.class);
+    when(analysisProgressReceiver.getProgressString()).thenReturn(analysisProgressString);
+    stateTracker.configurationStarted(new ConfigurationPhaseStartedEvent(analysisProgressReceiver));
 
     LoggingTerminalWriter terminalWriterLoadingConfiguration =
         new LoggingTerminalWriter(/*discardHighlight=*/ true);
@@ -290,8 +290,8 @@ public class UiStateTrackerTest extends FoundationTestCase {
     assertThat(loadingConfigurationOutput).contains(additionalMessage);
     assertThat(loadingConfigurationOutput).contains(loadingState);
     assertThat(loadingConfigurationOutput).contains(loadingActivity);
-    // It should contain the configured target progress string along with the loading information.
-    assertThat(loadingConfigurationOutput).contains(configuredTargetProgressString);
+    // It should contain the analysis progress string along with the loading information.
+    assertThat(loadingConfigurationOutput).contains(analysisProgressString);
   }
 
   @Test
@@ -344,7 +344,8 @@ public class UiStateTrackerTest extends FoundationTestCase {
 
     ActionLookupData actionLookupData = ActionLookupData.create(mock(ActionLookupKey.class), 1);
     stateTracker.actionCompletion(
-        new ActionCompletionEvent(20, clock.nanoTime(), fastAction, actionLookupData));
+        new ActionCompletionEvent(
+            20, clock.nanoTime(), fastAction, new FakeActionInputFileCache(), actionLookupData));
 
     LoggingTerminalWriter terminalWriter = new LoggingTerminalWriter(/*discardHighlight=*/ true);
     stateTracker.writeProgressBar(terminalWriter);
@@ -643,7 +644,7 @@ public class UiStateTrackerTest extends FoundationTestCase {
             label,
             new Location("dummy-file", 0, 0),
             /* targetKind= */ "dummy-target-kind",
-            /* mnemonic= */ "dummy-mnemonic",
+            /* buildConfigurationMnemonic= */ "dummy-mnemonic",
             /* configurationChecksum= */ "fedcba",
             new BuildConfigurationEvent(
                 BuildEventStreamProtos.BuildEventId.getDefaultInstance(),
@@ -1189,7 +1190,7 @@ public class UiStateTrackerTest extends FoundationTestCase {
             labelFooTest,
             new Location("dummy-file", 0, 0),
             /* targetKind= */ "dummy-target-kind",
-            /* mnemonic= */ "TestRunner",
+            /* buildConfigurationMnemonic= */ "TestRunner",
             /* configurationChecksum= */ "abcdef",
             new BuildConfigurationEvent(
                 BuildEventStreamProtos.BuildEventId.getDefaultInstance(),
@@ -1207,7 +1208,7 @@ public class UiStateTrackerTest extends FoundationTestCase {
             labelBarTest,
             new Location("dummy-file", 0, 0),
             /* targetKind= */ "dummy-target-kind",
-            /* mnemonic= */ "TestRunner",
+            /* buildConfigurationMnemonic= */ "TestRunner",
             /* configurationChecksum= */ "abcdef",
             new BuildConfigurationEvent(
                 BuildEventStreamProtos.BuildEventId.getDefaultInstance(),
@@ -1225,7 +1226,7 @@ public class UiStateTrackerTest extends FoundationTestCase {
             labelBazTest,
             new Location("dummy-file", 0, 0),
             /* targetKind= */ "dummy-target-kind",
-            /* mnemonic= */ "NonTestAction",
+            /* buildConfigurationMnemonic= */ "NonTestAction",
             /* configurationChecksum= */ "fedcba",
             new BuildConfigurationEvent(
                 BuildEventStreamProtos.BuildEventId.getDefaultInstance(),

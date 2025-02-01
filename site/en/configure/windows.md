@@ -10,8 +10,10 @@ instructions, see [Install Bazel on Windows](/install/windows).
 
 ## Known issues {:#known-issues}
 
-Windows-related Bazel issues are marked with the "team-Windows"
-label on GitHub. [You can see the open issues here.](https://github.com/bazelbuild/bazel/issues?q=is%3Aopen+is%3Aissue+label%3Ateam-Windows){: .external}
+Windows-related Bazel issues are marked with the "area-Windows" label on GitHub.
+[GitHub-Windows].
+
+[GitHub-Windows]: https://github.com/bazelbuild/bazel/issues?q=is%3Aopen+is%3Aissue+label%3Aarea-Windows
 
 ## Best practices {:#best-practices}
 
@@ -111,7 +113,7 @@ Starting with Bazel 1.0, you can run any rule without Bash, except when:
 - you use `--run_under` or `--script_path`
 - the test rule itself requires Bash (because its executable is a shell script)
 
-#### Using sh_binary and sh_* rules, and ctx.actions.run_shell() without Bash {:#sh-rules-without-bash}
+#### Using sh\_binary and sh\_* rules, and ctx.actions.run_shell() without Bash {:#sh-rules-without-bash}
 
 You need Bash to build and test `sh_*` rules, and to build and test Starlark
 rules that use `ctx.actions.run_shell()` and `ctx.resolve_command()`. This

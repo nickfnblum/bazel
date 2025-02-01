@@ -42,7 +42,6 @@ import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.AbstractCollection;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -268,22 +267,14 @@ public final class CcCompilationContext implements CcCompilationContextApi<Artif
   }
 
   /**
-   * Returns the transitive compilation prerequisites consolidated into middlemen prerequisites, or
-   * an empty set if there are no prerequisites.
+   * Returns the transitive compilation prerequisites.
    *
    * <p>Transitive compilation prerequisites are the prerequisites that will be needed by all
    * reverse dependencies; note that these do specifically not include any compilation prerequisites
    * that are only needed by the rule itself (for example, compiled source files from the {@code
    * srcs} attribute).
    *
-   * <p>To reduce the number of edges in the action graph, we express the dependency on compilation
-   * prerequisites as a transitive dependency via a middleman. After they have been accumulated
-   * ({@link Builder#addDependentCcCompilationContext(CcCompilationContext)}, and {@link
-   * Builder#addDependentCcCompilationContexts(Iterable)}, they are consolidated into a single
-   * middleman Artifact when {@link Builder#build()} is called.
-   *
-   * <p>The returned set can be empty if there are no prerequisites. Usually, it contains a single
-   * middleman.
+   * <p>The returned set can be empty if there are no prerequisites.
    */
   public NestedSet<Artifact> getTransitiveCompilationPrerequisites() {
     return compilationPrerequisites;
@@ -467,7 +458,7 @@ public final class CcCompilationContext implements CcCompilationContextApi<Artif
     for (HeaderInfo transitiveHeaderInfo : transitiveHeaderInfos) {
       boolean isModule = createModularHeaders && transitiveHeaderInfo.getModule(usePic) != null;
       handleHeadersForIncludeScanning(
-          transitiveHeaderInfo.modularHeaders,
+          transitiveHeaderInfo.getModularHeaders(),
           pathToLegalArtifact,
           treeArtifacts,
           isModule,
@@ -492,7 +483,7 @@ public final class CcCompilationContext implements CcCompilationContextApi<Artif
     if (transitiveHeaderCount == -1) {
       transitiveHeaderCount = pathToLegalArtifact.size();
     }
-    removeArtifactsFromSet(modularHeaders, headerInfo.modularHeaders);
+    removeArtifactsFromSet(modularHeaders, headerInfo.getModularHeaders());
     removeArtifactsFromSet(modularHeaders, headerInfo.textualHeaders);
     removeArtifactsFromSet(modularHeaders, headerInfo.separateModuleHeaders);
     return new IncludeScanningHeaderData.Builder(pathToLegalArtifact, modularHeaders);
@@ -514,8 +505,9 @@ public final class CcCompilationContext implements CcCompilationContextApi<Artif
       }
       // Not using range-based for loops here as often there is exactly one element in this list
       // and the amount of garbage created by SingletonImmutableList.iterator() is significant.
-      for (int i = 0; i < transitiveHeaderInfo.modularHeaders.size(); i++) {
-        Artifact header = transitiveHeaderInfo.modularHeaders.get(i);
+      ImmutableList<Artifact> modularHeaders = transitiveHeaderInfo.getModularHeaders();
+      for (int i = 0; i < modularHeaders.size(); i++) {
+        Artifact header = modularHeaders.get(i);
         if (includes.contains(header)) {
           modules.add(module);
           break;
@@ -581,8 +573,8 @@ public final class CcCompilationContext implements CcCompilationContextApi<Artif
     }
   }
 
-  /** @return modules maps from direct dependencies. */
-  public Iterable<Artifact> getDirectModuleMaps() {
+  /** Returns modules maps from direct dependencies. */
+  public ImmutableList<Artifact> getDirectModuleMaps() {
     return directModuleMaps;
   }
 
@@ -595,15 +587,15 @@ public final class CcCompilationContext implements CcCompilationContextApi<Artif
   }
 
   /**
-   * @return all declared headers of the current module if the current target is compiled as a
-   *     module.
+   * Returns all declared headers of the current module if the current target is compiled as a
+   * module.
    */
   ImmutableList<Artifact> getHeaderModuleSrcs(boolean separateModule) {
     if (separateModule) {
       return headerInfo.separateModuleHeaders;
     }
     return new ImmutableSet.Builder<Artifact>()
-        .addAll(headerInfo.modularHeaders)
+        .addAll(headerInfo.getModularHeaders())
         .addAll(headerInfo.textualHeaders)
         .addAll(headerInfo.separateModuleHeaders)
         .build()
@@ -651,7 +643,7 @@ public final class CcCompilationContext implements CcCompilationContextApi<Artif
         headerTokens.build());
   }
 
-  /** @return the C++ module map of the owner. */
+  /** Returns the C++ module map of the owner. */
   public CppModuleMap getCppModuleMap() {
     return cppModuleMap;
   }
@@ -704,7 +696,6 @@ public final class CcCompilationContext implements CcCompilationContextApi<Artif
 
   /** Builder class for {@link CcCompilationContext}. */
   public static class Builder {
-    private String purpose;
     private final NestedSetBuilder<Artifact> compilationPrerequisites =
         NestedSetBuilder.stableOrder();
     private final TransitiveSetHelper<PathFragment> includeDirs = new TransitiveSetHelper<>();
@@ -729,24 +720,6 @@ public final class CcCompilationContext implements CcCompilationContextApi<Artif
 
     /** Creates a new builder for a {@link CcCompilationContext} instance. */
     private Builder() {}
-
-    /**
-     * Overrides the purpose of this context. This is useful if a Target needs more than one
-     * CcCompilationContext. (The purpose is used to construct the name of the prerequisites
-     * middleman for the context, and all artifacts for a given Target must have distinct names.)
-     *
-     * @param purpose must be a string which is suitable for use as a filename. A single rule may
-     *     have many middlemen with distinct purposes.
-     */
-    @CanIgnoreReturnValue
-    public Builder setPurpose(String purpose) {
-      this.purpose = purpose;
-      return this;
-    }
-
-    public String getPurpose() {
-      return purpose;
-    }
 
     /**
      * Merges the {@link CcCompilationContext} of a dependency into this one by adding the contents
@@ -918,7 +891,7 @@ public final class CcCompilationContext implements CcCompilationContextApi<Artif
       return this;
     }
 
-    /** Add framewrok include directories to be added with "-F". */
+    /** Add framework include directories to be added with "-F". */
     @CanIgnoreReturnValue
     public Builder addFrameworkIncludeDirs(Iterable<PathFragment> frameworkIncludeDirs) {
       this.frameworkIncludeDirs.addAll(frameworkIncludeDirs);
@@ -1154,7 +1127,7 @@ public final class CcCompilationContext implements CcCompilationContextApi<Artif
    * Gathers data about the PIC and no-PIC .pcm files belonging to this context and the associated
    * information about the headers, e.g. modular vs. textual headers and pre-grepped header files.
    *
-   * <p>This also implements a data structure very similar to NestedSet, but chosing slightly
+   * <p>This also implements a data structure very similar to NestedSet, but choosing slightly
    * different trade-offs to account for the specific data stored in here, specifically, we know
    * that there is going to be a single entry in every node of the DAG. Contrary to NestedSet, we
    * reuse memoization data from dependencies to conserve both runtime and memory. Experiments have
@@ -1181,9 +1154,6 @@ public final class CcCompilationContext implements CcCompilationContextApi<Artif
     /** All private header files that are compiled into this module. */
     final ImmutableList<Artifact> modularPrivateHeaders;
 
-    /** All header files that are compiled into this module. */
-    private final ImmutableList<Artifact> modularHeaders;
-
     /** All textual header files that are contained in this module. */
     final ImmutableList<Artifact> textualHeaders;
 
@@ -1195,6 +1165,13 @@ public final class CcCompilationContext implements CcCompilationContextApi<Artif
 
     /** HeaderInfos of direct dependencies of C++ target represented by this context. */
     final ImmutableList<HeaderInfo> deps;
+
+    /**
+     * All header files that are compiled into this module.
+     *
+     * <p>Lazily initialized. Use {@link #getModularHeaders} instead.
+     */
+    private transient volatile ImmutableList<Artifact> lazyModularHeaders;
 
     /** Collection representing the memoized form of transitive information, set by flatten(). */
     private TransitiveHeaderCollection memo = null;
@@ -1213,8 +1190,6 @@ public final class CcCompilationContext implements CcCompilationContextApi<Artif
       this.picHeaderModule = picHeaderModule;
       this.modularPublicHeaders = modularPublicHeaders;
       this.modularPrivateHeaders = modularPrivateHeaders;
-      this.modularHeaders =
-          ImmutableList.copyOf(Iterables.concat(modularPublicHeaders, modularPrivateHeaders));
       this.textualHeaders = textualHeaders;
       this.separateModuleHeaders = separateModuleHeaders;
       this.separateModule = separateModule;
@@ -1269,6 +1244,18 @@ public final class CcCompilationContext implements CcCompilationContextApi<Artif
           dep.addOthers(result, additionalDeps);
         }
       }
+    }
+
+    private ImmutableList<Artifact> getModularHeaders() {
+      if (lazyModularHeaders == null) {
+        synchronized (this) {
+          if (lazyModularHeaders == null) {
+            lazyModularHeaders =
+                ImmutableList.copyOf(Iterables.concat(modularPublicHeaders, modularPrivateHeaders));
+          }
+        }
+      }
+      return lazyModularHeaders;
     }
 
     /** Represents the memoized transitive information for a HeaderInfo instance. */
@@ -1326,9 +1313,9 @@ public final class CcCompilationContext implements CcCompilationContextApi<Artif
     public static class Builder {
       private DerivedArtifact headerModule = null;
       private DerivedArtifact picHeaderModule = null;
-      private final Set<Artifact> modularPublicHeaders = new HashSet<>();
-      private final Set<Artifact> modularPrivateHeaders = new HashSet<>();
-      private final Set<Artifact> textualHeaders = new HashSet<>();
+      private final LinkedHashSet<Artifact> modularPublicHeaders = new LinkedHashSet<>();
+      private final LinkedHashSet<Artifact> modularPrivateHeaders = new LinkedHashSet<>();
+      private final LinkedHashSet<Artifact> textualHeaders = new LinkedHashSet<>();
       private Collection<Artifact> separateModuleHeaders = ImmutableList.of();
       private DerivedArtifact separateModule = null;
       private DerivedArtifact separatePicModule = null;

@@ -53,6 +53,7 @@ import com.google.devtools.build.lib.packages.RuleFactory;
 import com.google.devtools.build.lib.packages.RuleTransitionData;
 import com.google.devtools.build.lib.packages.WorkspaceFactory;
 import com.google.devtools.build.lib.starlarkbuildapi.core.Bootstrap;
+import com.google.devtools.build.lib.unsafe.StringUnsafe;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -131,7 +132,10 @@ public /*final*/ class ConfiguredRuleClassProvider
 
     @Override
     protected synchronized byte[] getDigest(PathFragment path) {
-      return getDigestFunction().getHashFunction().hashString(path.toString(), UTF_8).asBytes();
+      return getDigestFunction()
+          .getHashFunction()
+          .hashBytes(StringUnsafe.getInstance().getInternalStringBytes(path.getPathString()))
+          .asBytes();
     }
   }
 
@@ -185,13 +189,6 @@ public /*final*/ class ConfiguredRuleClassProvider
     @CanIgnoreReturnValue
     public Builder addWorkspaceFileSuffix(String contents) {
       defaultWorkspaceFileSuffix.append(contents);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    @VisibleForTesting
-    public Builder clearWorkspaceFileSuffixForTesting() {
-      defaultWorkspaceFileSuffix.delete(0, defaultWorkspaceFileSuffix.length());
       return this;
     }
 
@@ -890,9 +887,10 @@ public /*final*/ class ConfiguredRuleClassProvider
    * <p>This only includes definitions added by {@link Builder#addSymlinkDefinition}, not the
    * standard symlinks in {@link com.google.devtools.build.lib.buildtool.OutputDirectoryLinksUtils}.
    *
-   * <p>Note: Usages of custom symlink definitions should be rare. Currently it is only used to
-   * implement the py2-bin / py3-bin symlinks.
+   * <p>Note: Usages of custom symlink definitions should be very rare. This feature was added to
+   * implement the py2-bin / py3-bin symlinks, which have since been removed from Bazel.
    */
+  // TODO(bazel-team): Delete?
   public ImmutableList<SymlinkDefinition> getSymlinkDefinitions() {
     return symlinkDefinitions;
   }

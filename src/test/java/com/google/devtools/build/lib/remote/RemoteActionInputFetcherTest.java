@@ -23,6 +23,7 @@ import com.google.common.eventbus.EventBus;
 import com.google.common.hash.HashCode;
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.ActionInputPrefetcher.Priority;
+import com.google.devtools.build.lib.actions.ActionInputPrefetcher.Reason;
 import com.google.devtools.build.lib.actions.ActionOutputDirectoryHelper;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
@@ -70,12 +71,12 @@ public class RemoteActionInputFetcherTest extends ActionInputPrefetcherTestBase 
 
   @Override
   protected AbstractActionInputPrefetcher createPrefetcher(Map<HashCode, byte[]> cas) {
-    RemoteCache remoteCache = newCache(options, digestUtil, cas);
+    CombinedCache combinedCache = newCombinedCache(options, digestUtil, cas);
     return new RemoteActionInputFetcher(
-        new Reporter(new EventBus()),
+        new Reporter(eventBus),
         "none",
         "none",
-        remoteCache,
+        combinedCache,
         execRoot,
         tempPathGenerator,
         DUMMY_REMOTE_OUTPUT_CHECKER,
@@ -86,13 +87,13 @@ public class RemoteActionInputFetcherTest extends ActionInputPrefetcherTestBase 
   @Test
   public void testStagingVirtualActionInput() throws Exception {
     // arrange
-    RemoteCache remoteCache = newCache(options, digestUtil, new HashMap<>());
+    CombinedCache combinedCache = newCombinedCache(options, digestUtil, new HashMap<>());
     RemoteActionInputFetcher actionInputFetcher =
         new RemoteActionInputFetcher(
             new Reporter(new EventBus()),
             "none",
             "none",
-            remoteCache,
+            combinedCache,
             execRoot,
             tempPathGenerator,
             DUMMY_REMOTE_OUTPUT_CHECKER,
@@ -102,8 +103,12 @@ public class RemoteActionInputFetcherTest extends ActionInputPrefetcherTestBase 
 
     // act
     wait(
-        actionInputFetcher.prefetchFiles(
-            action, ImmutableList.of(a), (ActionInput unused) -> null, Priority.MEDIUM));
+        actionInputFetcher.prefetchFilesInterruptibly(
+            action,
+            ImmutableList.of(a),
+            (ActionInput unused) -> null,
+            Priority.MEDIUM,
+            Reason.INPUTS));
 
     // assert
     Path p = execRoot.getRelative(a.getExecPath());
@@ -116,13 +121,13 @@ public class RemoteActionInputFetcherTest extends ActionInputPrefetcherTestBase 
   @Test
   public void testStagingEmptyVirtualActionInput() throws Exception {
     // arrange
-    RemoteCache remoteCache = newCache(options, digestUtil, new HashMap<>());
+    CombinedCache combinedCache = newCombinedCache(options, digestUtil, new HashMap<>());
     RemoteActionInputFetcher actionInputFetcher =
         new RemoteActionInputFetcher(
             new Reporter(new EventBus()),
             "none",
             "none",
-            remoteCache,
+            combinedCache,
             execRoot,
             tempPathGenerator,
             DUMMY_REMOTE_OUTPUT_CHECKER,
@@ -131,11 +136,12 @@ public class RemoteActionInputFetcherTest extends ActionInputPrefetcherTestBase 
 
     // act
     wait(
-        actionInputFetcher.prefetchFiles(
+        actionInputFetcher.prefetchFilesInterruptibly(
             action,
             ImmutableList.of(VirtualActionInput.EMPTY_MARKER),
             (ActionInput unused) -> null,
-            Priority.MEDIUM));
+            Priority.MEDIUM,
+            Reason.INPUTS));
 
     // assert that nothing happened
     assertThat(actionInputFetcher.downloadedFiles()).isEmpty();
@@ -153,8 +159,12 @@ public class RemoteActionInputFetcherTest extends ActionInputPrefetcherTestBase 
             BulkTransferException.class,
             () ->
                 wait(
-                    prefetcher.prefetchFiles(
-                        action, ImmutableList.of(a), metadata::get, Priority.MEDIUM)));
+                    prefetcher.prefetchFilesInterruptibly(
+                        action,
+                        ImmutableList.of(a),
+                        metadata::get,
+                        Priority.MEDIUM,
+                        Reason.INPUTS)));
 
     assertThat(prefetcher.downloadedFiles()).isEmpty();
     assertThat(prefetcher.downloadsInProgress()).isEmpty();
@@ -165,7 +175,7 @@ public class RemoteActionInputFetcherTest extends ActionInputPrefetcherTestBase 
         .contains(String.format("%s/%s", digest.getHash(), digest.getSizeBytes()));
   }
 
-  private RemoteCache newCache(
+  private CombinedCache newCombinedCache(
       RemoteOptions options, DigestUtil digestUtil, Map<HashCode, byte[]> cas) {
     Map<Digest, byte[]> cacheEntries = Maps.newHashMapWithExpectedSize(cas.size());
     for (Map.Entry<HashCode, byte[]> entry : cas.entrySet()) {
@@ -173,6 +183,7 @@ public class RemoteActionInputFetcherTest extends ActionInputPrefetcherTestBase 
           DigestUtil.buildDigest(entry.getKey().asBytes(), entry.getValue().length),
           entry.getValue());
     }
-    return new RemoteCache(new InMemoryCacheClient(cacheEntries), options, digestUtil);
+    return new CombinedCache(
+        new InMemoryCacheClient(cacheEntries), /* diskCacheClient= */ null, options, digestUtil);
   }
 }

@@ -13,6 +13,8 @@
 // limitations under the License.
 package com.google.devtools.build.lib.actions;
 
+import static java.util.stream.Collectors.joining;
+
 import com.google.auto.value.AutoValue;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
@@ -99,6 +101,27 @@ public abstract class ActionOwner {
         execProperties);
   }
 
+  @Nullable
+  public String getDescription() {
+    Label label = getLabel();
+    if (label == null) {
+      return null;
+    }
+    String targetDescription = "target " + label;
+
+    ImmutableList<AspectDescriptor> aspectDescriptors = getAspectDescriptors();
+    if (aspectDescriptors.isEmpty()) {
+      return targetDescription;
+    }
+
+    String aspectNames =
+        aspectDescriptors.stream().map(AspectDescriptor::getDescription).collect(joining(", "));
+
+    return String.format(
+        "aspect%s [%s] on %s",
+        aspectDescriptors.size() >= 1 ? "s" : "", aspectNames, targetDescription);
+  }
+
   /**
    * Returns the label for this {@link ActionOwner}, or null if the {@link #SYSTEM_ACTION_OWNER}.
    */
@@ -155,7 +178,12 @@ public abstract class ActionOwner {
 
   public abstract ImmutableList<AspectDescriptor> getAspectDescriptors();
 
-  /** Returns a String to String map containing the execution properties of this action. */
+  /**
+   * Returns a String to String map containing the execution properties available at the target
+   * level, e.g. via the exec_properties attribute of the rule or the execution platform for the
+   * exec group that the action is assigned to. This does <em>not</em> include any action-specific
+   * properties.
+   */
   @VisibleForTesting
   public abstract ImmutableMap<String, String> getExecProperties();
 

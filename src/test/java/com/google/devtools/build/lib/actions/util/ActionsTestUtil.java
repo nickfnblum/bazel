@@ -26,10 +26,12 @@ import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Lists;
 import com.google.devtools.build.lib.actions.AbstractAction;
 import com.google.devtools.build.lib.actions.Action;
 import com.google.devtools.build.lib.actions.ActionAnalysisMetadata;
+import com.google.devtools.build.lib.actions.ActionConflictException;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
 import com.google.devtools.build.lib.actions.ActionExecutionContext.LostInputsCheck;
 import com.google.devtools.build.lib.actions.ActionGraph;
@@ -41,12 +43,12 @@ import com.google.devtools.build.lib.actions.ActionLookupKey;
 import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.ActionResult;
 import com.google.devtools.build.lib.actions.Artifact;
-import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
 import com.google.devtools.build.lib.actions.Artifact.DerivedArtifact;
 import com.google.devtools.build.lib.actions.Artifact.SourceArtifact;
 import com.google.devtools.build.lib.actions.Artifact.SpecialArtifact;
 import com.google.devtools.build.lib.actions.Artifact.SpecialArtifactType;
 import com.google.devtools.build.lib.actions.Artifact.TreeFileArtifact;
+import com.google.devtools.build.lib.actions.ArtifactExpander;
 import com.google.devtools.build.lib.actions.ArtifactOwner;
 import com.google.devtools.build.lib.actions.ArtifactResolver;
 import com.google.devtools.build.lib.actions.ArtifactRoot;
@@ -55,12 +57,11 @@ import com.google.devtools.build.lib.actions.BuildConfigurationEvent;
 import com.google.devtools.build.lib.actions.DiscoveredModulesPruner;
 import com.google.devtools.build.lib.actions.Executor;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
+import com.google.devtools.build.lib.actions.FilesetOutputTree;
 import com.google.devtools.build.lib.actions.InputMetadataProvider;
-import com.google.devtools.build.lib.actions.MiddlemanType;
-import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.actions.PackageRootResolver;
 import com.google.devtools.build.lib.actions.RunfilesArtifactValue;
-import com.google.devtools.build.lib.actions.RunfilesSupplier.RunfilesTree;
+import com.google.devtools.build.lib.actions.RunfilesTree;
 import com.google.devtools.build.lib.actions.ThreadStateReceiver;
 import com.google.devtools.build.lib.actions.cache.OutputMetadataStore;
 import com.google.devtools.build.lib.actions.cache.Protos.ActionCacheStatistics.MissDetail;
@@ -87,7 +88,6 @@ import com.google.devtools.build.lib.util.FileType;
 import com.google.devtools.build.lib.util.Fingerprint;
 import com.google.devtools.build.lib.util.io.FileOutErr;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
-import com.google.devtools.build.lib.vfs.FileStatus;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Root;
@@ -96,7 +96,6 @@ import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
 import com.google.devtools.build.skyframe.SkyFunction.Environment;
 import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
-import com.google.protobuf.ByteString;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.ArrayDeque;
@@ -139,7 +138,8 @@ public final class ActionsTestUtil {
         eventHandler,
         actionKeyContext,
         fileOutErr,
-        execRoot,
+        new SingleBuildFileCache(
+            execRoot.getPathString(), execRoot.getFileSystem(), SyscallCache.NO_CACHE),
         outputMetadataStore,
         /* clientEnv= */ ImmutableMap.of());
   }
@@ -149,13 +149,12 @@ public final class ActionsTestUtil {
       ExtendedEventHandler eventHandler,
       ActionKeyContext actionKeyContext,
       FileOutErr fileOutErr,
-      Path execRoot,
+      InputMetadataProvider inputMetadataProvider,
       OutputMetadataStore outputMetadataStore,
       Map<String, String> clientEnv) {
     return new ActionExecutionContext(
         executor,
-        new SingleBuildFileCache(
-            execRoot.getPathString(), execRoot.getFileSystem(), SyscallCache.NO_CACHE),
+        inputMetadataProvider,
         ActionInputPrefetcher.NONE,
         actionKeyContext,
         outputMetadataStore,
@@ -165,7 +164,7 @@ public final class ActionsTestUtil {
         eventHandler,
         ImmutableMap.copyOf(clientEnv),
         /* topLevelFilesets= */ ImmutableMap.of(),
-        (artifact, output) -> {},
+        treeArtifact -> ImmutableSortedSet.of(),
         /* actionFileSystem= */ null,
         /* skyframeDepsResult= */ null,
         DiscoveredModulesPruner.DEFAULT,
@@ -191,7 +190,7 @@ public final class ActionsTestUtil {
         eventHandler,
         /* clientEnv= */ ImmutableMap.of(),
         /* topLevelFilesets= */ ImmutableMap.of(),
-        (artifact, output) -> {},
+        treeArtifact -> ImmutableSortedSet.of(),
         /* actionFileSystem= */ null,
         /* skyframeDepsResult= */ null,
         DiscoveredModulesPruner.DEFAULT,
@@ -240,7 +239,7 @@ public final class ActionsTestUtil {
     return ActionExecutionValue.createFromOutputMetadataStore(
         artifactData,
         treeArtifactData,
-        /* outputSymlinks= */ ImmutableList.of(),
+        FilesetOutputTree.EMPTY,
         /* discoveredModules= */ NestedSetBuilder.emptySet(Order.STABLE_ORDER));
   }
 
@@ -262,6 +261,11 @@ public final class ActionsTestUtil {
     return root.isSourceRoot()
         ? new Artifact.SourceArtifact(root, execPath, ArtifactOwner.NULL_OWNER)
         : DerivedArtifact.create(root, execPath, NULL_ARTIFACT_OWNER);
+  }
+
+  public static SpecialArtifact createRunfilesArtifact(ArtifactRoot root, String execPath) {
+    return SpecialArtifact.create(
+        root, PathFragment.create(execPath), NULL_ARTIFACT_OWNER, SpecialArtifactType.RUNFILES);
   }
 
   public static SpecialArtifact createTreeArtifactWithGeneratingAction(
@@ -313,13 +317,6 @@ public final class ActionsTestUtil {
   /** Creates a {@link VirtualActionInput} with given string as contents and provided path. */
   public static VirtualActionInput createVirtualActionInput(PathFragment path, String contents) {
     return new VirtualActionInput() {
-      @Override
-      public ByteString getBytes() throws IOException {
-        ByteString.Output out = ByteString.newOutput();
-        writeTo(out);
-        return out.toByteString();
-      }
-
       @Override
       public String getExecPathString() {
         return path.getPathString();
@@ -447,40 +444,25 @@ public final class ActionsTestUtil {
   }
 
   /**
-   * A mocked action containing the inputs and outputs of the action and determines whether or not
-   * the action is a middleman. Used for tests that do not need to execute the action.
+   * A mocked action containing the inputs and outputs of the action. Used for tests that do not
+   * need to execute the action.
    */
   public static class MockAction extends AbstractAction {
-
-    private final boolean middleman;
     private final boolean isShareable;
 
     public MockAction(Iterable<Artifact> inputs, ImmutableSet<Artifact> outputs) {
-      this(inputs, outputs, /*middleman=*/ false, /*isShareable=*/ true);
-    }
-
-    public MockAction(
-        Iterable<Artifact> inputs, ImmutableSet<Artifact> outputs, boolean middleman) {
-      this(inputs, outputs, middleman, /*isShareable*/ true);
+      this(inputs, outputs, /* isShareable= */ true);
     }
 
     public MockAction(
         Iterable<Artifact> inputs,
         ImmutableSet<Artifact> outputs,
-        boolean middleman,
         boolean isShareable) {
       super(
           NULL_ACTION_OWNER,
           NestedSetBuilder.<Artifact>stableOrder().addAll(inputs).build(),
           outputs);
-      this.middleman = middleman;
       this.isShareable = isShareable;
-    }
-
-    @Override
-    public MiddlemanType getActionType() {
-      // RUNFILES_MIDDLEMAN is chosen arbitrarily among the middleman types.
-      return middleman ? MiddlemanType.RUNFILES_MIDDLEMAN : super.getActionType();
     }
 
     @Override
@@ -895,6 +877,11 @@ public final class ActionsTestUtil {
     public Path getPathFromSourceExecPath(Path execRoot, PathFragment execPath) {
       throw new UnsupportedOperationException();
     }
+
+    @Override
+    public boolean isDerivedArtifact(PathFragment execPath) {
+      throw new UnsupportedOperationException();
+    }
   }
 
   /**
@@ -919,7 +906,7 @@ public final class ActionsTestUtil {
   public static class FakeInputMetadataHandlerBase
       implements InputMetadataProvider, OutputMetadataStore {
     @Override
-    public FileArtifactValue getInputMetadata(ActionInput input) throws IOException {
+    public FileArtifactValue getInputMetadataChecked(ActionInput input) throws IOException {
       throw new UnsupportedOperationException();
     }
 
@@ -946,24 +933,8 @@ public final class ActionsTestUtil {
     }
 
     @Override
-    public void setDigestForVirtualArtifact(Artifact artifact, byte[] digest) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public ImmutableSet<TreeFileArtifact> getTreeArtifactChildren(SpecialArtifact treeArtifact) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
     public TreeArtifactValue getTreeArtifactValue(SpecialArtifact treeArtifact)
         throws IOException, InterruptedException {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public FileArtifactValue constructMetadataForDigest(
-        Artifact output, FileStatus statNoFollow, byte[] digest) {
       throw new UnsupportedOperationException();
     }
 

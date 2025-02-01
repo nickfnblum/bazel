@@ -125,6 +125,14 @@ public interface CppConfigurationApi<InvalidConfigurationExceptionT extends Exce
       allowReturnNones = true)
   String fdoInstrumentStarlark(StarlarkThread thread) throws EvalException;
 
+  @Nullable
+  @StarlarkMethod(
+      name = "cs_fdo_instrument",
+      documented = false,
+      useStarlarkThread = true,
+      allowReturnNones = true)
+  String csFdoInstrumentStarlark(StarlarkThread thread) throws EvalException;
+
   @StarlarkMethod(
       name = "process_headers_in_dependencies",
       documented = false,
@@ -162,11 +170,8 @@ public interface CppConfigurationApi<InvalidConfigurationExceptionT extends Exce
   @StarlarkMethod(name = "strip_opts", documented = false, useStarlarkThread = true)
   Sequence<String> getStripOptsStarlark(StarlarkThread thread) throws EvalException;
 
-  @StarlarkMethod(
-      name = "incompatible_enable_cc_test_feature",
-      documented = false,
-      useStarlarkThread = true)
-  boolean useCcTestFeatureStarlark(StarlarkThread thread) throws EvalException;
+  @StarlarkMethod(name = "should_strip_binaries", useStarlarkThread = true, documented = false)
+  boolean shouldStripBinariesForStarlark(StarlarkThread thread) throws EvalException;
 
   @StarlarkMethod(name = "build_test_dwp", documented = false, useStarlarkThread = true)
   boolean buildTestDwpIsActivatedStarlark(StarlarkThread thread) throws EvalException;

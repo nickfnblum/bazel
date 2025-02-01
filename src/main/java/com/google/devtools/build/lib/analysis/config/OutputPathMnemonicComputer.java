@@ -19,13 +19,14 @@ import static com.google.devtools.build.lib.analysis.config.StarlarkDefinedConfi
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Strings;
-import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.Streams;
 import com.google.devtools.build.lib.analysis.PlatformOptions;
+import com.google.devtools.build.lib.analysis.test.TestConfiguration;
+import com.google.devtools.build.lib.analysis.test.TestTrimmingLogic;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.server.FailureDetails.BuildConfiguration.Code;
 import com.google.devtools.build.lib.util.Fingerprint;
@@ -299,6 +300,10 @@ public final class OutputPathMnemonicComputer {
       return "";
     }
 
+    if (!toOptions.contains(TestConfiguration.TestOptions.class)) {
+      baselineOptions = TestTrimmingLogic.trim(baselineOptions);
+    }
+
     // TODO(blaze-configurability-team): As a mild performance update, getFirst already includes
     //   details of the corresponding option. Could incorporate this instead of hashChosenOptions
     //   regenerating the OptionDefinitions and values.
@@ -308,8 +313,8 @@ public final class OutputPathMnemonicComputer {
     //   trimmings. See longform note in {@link ConfiguredTargetKey} for details.
     ImmutableSet<String> chosenNativeOptions =
         diff.getFirst().keySet().stream()
-            .filter(optionDef -> !explicitInOutputPathOptions.contains(optionDef.getOptionName()))
             .map(OptionDefinition::getOptionName)
+            .filter(optionName -> !explicitInOutputPathOptions.contains(optionName))
             .collect(toImmutableSet());
     // Note: getChangedStarlarkOptions includes all changed options, added options and removed
     //   options between baselineOptions and toOptions. This is necessary since there is no current
@@ -377,24 +382,16 @@ public final class OutputPathMnemonicComputer {
     // it is okay if chosenNative or chosenStarlark do not have a stable iteration order
     TreeMap<String, Object> toHash = new TreeMap<>();
     for (String nativeOptionName : chosenNative) {
-      Object value;
-      try {
-        OptionInfo optionInfo = optionInfoMap.get(nativeOptionName);
-        if (optionInfo == null) {
-          // This can occur if toOptions has been trimmed but the supplied chosen native options
-          // includes that trimmed options.
-          // (e.g. legacy naming mode, using --trim_test_configuration and --test_arg transition).
-          continue;
-        }
-        value =
-            optionInfo
-                .getDefinition()
-                .getField()
-                .get(toOptions.get(optionInfoMap.get(nativeOptionName).getOptionClass()));
-      } catch (IllegalAccessException e) {
-        throw new VerifyException(
-            "IllegalAccess for option " + nativeOptionName + ": " + e.getMessage());
+      OptionInfo optionInfo = optionInfoMap.get(nativeOptionName);
+      if (optionInfo == null) {
+        // This can occur if toOptions has been trimmed but the supplied chosen native options
+        // includes that trimmed options.
+        // (e.g. legacy naming mode, using --trim_test_configuration and --test_arg transition).
+        continue;
       }
+      FragmentOptions fragmentOptions =
+          toOptions.get(optionInfoMap.get(nativeOptionName).getOptionClass());
+      Object value = optionInfo.getDefinition().getValue(fragmentOptions);
       // TODO(blaze-configurability-team): The commandline option is legacy and can be removed
       //   after fixing up all the associated tests.
       toHash.put("//command_line_option:" + nativeOptionName, value);

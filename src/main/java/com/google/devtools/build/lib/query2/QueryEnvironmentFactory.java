@@ -46,7 +46,7 @@ public class QueryEnvironmentFactory {
       TargetProvider targetProvider,
       CachingPackageLocator cachingPackageLocator,
       TargetPatternPreloader targetPatternPreloader,
-      TargetPattern.Parser mainRepoTargetParser,
+      TargetPattern.Parser targetParser,
       PathFragment relativeWorkingDirectory,
       boolean keepGoing,
       boolean strictScope,
@@ -58,7 +58,6 @@ public class QueryEnvironmentFactory {
       Set<Setting> settings,
       Iterable<QueryFunction> extraFunctions,
       @Nullable PathPackageLocator packagePath,
-      boolean blockUniverseEvaluationErrors,
       boolean useGraphlessQuery,
       LabelPrinter labelPrinter) {
     Preconditions.checkNotNull(universeScope);
@@ -69,12 +68,11 @@ public class QueryEnvironmentFactory {
           eventHandler,
           settings,
           extraFunctions,
-          mainRepoTargetParser,
+          targetParser,
           relativeWorkingDirectory,
           graphFactory,
           universeScope,
           packagePath,
-          blockUniverseEvaluationErrors,
           labelPrinter);
     } else if (useGraphlessQuery) {
       return new GraphlessBlazeQueryEnvironment(
@@ -82,7 +80,7 @@ public class QueryEnvironmentFactory {
           targetProvider,
           cachingPackageLocator,
           targetPatternPreloader,
-          mainRepoTargetParser,
+          targetParser,
           keepGoing,
           strictScope,
           loadingPhaseThreads,
@@ -97,7 +95,7 @@ public class QueryEnvironmentFactory {
           targetProvider,
           cachingPackageLocator,
           targetPatternPreloader,
-          mainRepoTargetParser,
+          targetParser,
           keepGoing,
           strictScope,
           loadingPhaseThreads,

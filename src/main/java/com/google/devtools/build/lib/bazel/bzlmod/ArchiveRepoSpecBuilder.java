@@ -15,10 +15,15 @@
 
 package com.google.devtools.build.lib.bazel.bzlmod;
 
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
+
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import java.util.List;
+import java.util.Map.Entry;
 import net.starlark.java.eval.StarlarkInt;
 
 /**
@@ -27,18 +32,15 @@ import net.starlark.java.eval.StarlarkInt;
  */
 public class ArchiveRepoSpecBuilder {
 
-  public static final String HTTP_ARCHIVE_PATH = "@bazel_tools//tools/build_defs/repo:http.bzl";
+  public static final RepoRuleId HTTP_ARCHIVE =
+      new RepoRuleId(
+          Label.parseCanonicalUnchecked("@@bazel_tools//tools/build_defs/repo:http.bzl"),
+          "http_archive");
 
   private final ImmutableMap.Builder<String, Object> attrBuilder;
 
   public ArchiveRepoSpecBuilder() {
     attrBuilder = new ImmutableMap.Builder<>();
-  }
-
-  @CanIgnoreReturnValue
-  public ArchiveRepoSpecBuilder setRepoName(String repoName) {
-    attrBuilder.put("name", repoName);
-    return this;
   }
 
   @CanIgnoreReturnValue
@@ -60,7 +62,7 @@ public class ArchiveRepoSpecBuilder {
   }
 
   @CanIgnoreReturnValue
-  public ArchiveRepoSpecBuilder setPatches(ImmutableList<String> patches) {
+  public ArchiveRepoSpecBuilder setPatches(ImmutableList<Label> patches) {
     attrBuilder.put("patches", patches);
     return this;
   }
@@ -84,6 +86,19 @@ public class ArchiveRepoSpecBuilder {
   }
 
   @CanIgnoreReturnValue
+  public ArchiveRepoSpecBuilder setOverlay(ImmutableMap<String, RemoteFile> overlay) {
+    ImmutableMap<String, List<String>> remoteFiles =
+        overlay.entrySet().stream()
+            .collect(toImmutableMap(Entry::getKey, e -> e.getValue().urls()));
+    ImmutableMap<String, String> remoteFilesIntegrity =
+        overlay.entrySet().stream()
+            .collect(toImmutableMap(Entry::getKey, e -> e.getValue().integrity()));
+    attrBuilder.put("remote_file_urls", remoteFiles);
+    attrBuilder.put("remote_file_integrity", remoteFilesIntegrity);
+    return this;
+  }
+
+  @CanIgnoreReturnValue
   public ArchiveRepoSpecBuilder setRemotePatchStrip(int remotePatchStrip) {
     attrBuilder.put("remote_patch_strip", StarlarkInt.of(remotePatchStrip));
     return this;
@@ -98,10 +113,12 @@ public class ArchiveRepoSpecBuilder {
   }
 
   public RepoSpec build() {
-    return RepoSpec.builder()
-        .setBzlFile(HTTP_ARCHIVE_PATH)
-        .setRuleClassName("http_archive")
-        .setAttributes(AttributeValues.create(attrBuilder.buildOrThrow()))
-        .build();
+    return new RepoSpec(HTTP_ARCHIVE, AttributeValues.create(attrBuilder.buildOrThrow()));
   }
+
+  /**
+   * A simple pojo to track remote files that are offered at multiple urls (mirrors) with a single
+   * integrity. We split up the file here to simplify the dependency.
+   */
+  public record RemoteFile(String integrity, List<String> urls) {}
 }

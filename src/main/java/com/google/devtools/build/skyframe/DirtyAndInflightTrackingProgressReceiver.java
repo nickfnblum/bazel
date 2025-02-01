@@ -43,7 +43,7 @@ public class DirtyAndInflightTrackingProgressReceiver implements InflightTrackin
   }
 
   @Override
-  public final void dirtied(SkyKey skyKey, DirtyType dirtyType) {
+  public void dirtied(SkyKey skyKey, DirtyType dirtyType) {
     progressReceiver.dirtied(skyKey, dirtyType);
     addToDirtySet(skyKey, dirtyType);
   }
@@ -81,6 +81,11 @@ public class DirtyAndInflightTrackingProgressReceiver implements InflightTrackin
     }
   }
 
+  @Override
+  public void changePruned(SkyKey skyKey) {
+    progressReceiver.changePruned(skyKey);
+  }
+
   /**
    * Called when a node was requested to be enqueued but wasn't because either an interrupt or an
    * error (in nokeep_going mode) had occurred.
@@ -96,12 +101,12 @@ public class DirtyAndInflightTrackingProgressReceiver implements InflightTrackin
   }
 
   @Override
-  public final void stateEnding(SkyKey skyKey, NodeState nodeState) {
+  public void stateEnding(SkyKey skyKey, NodeState nodeState) {
     progressReceiver.stateEnding(skyKey, nodeState);
   }
 
   @Override
-  public final void evaluated(
+  public void evaluated(
       SkyKey skyKey,
       EvaluationState state,
       @Nullable SkyValue newValue,

@@ -26,7 +26,7 @@ def git(*args):
                                  list(args)).decode("utf-8").strip().split("\n")
 
 
-def extract_pr_title(commit_message_lines):
+def extract_title(commit_message_lines):
   """Extracts first line from commit message (passed in as a list of lines)."""
   return re.sub(
       r"\[\d+\.\d+\.\d\]\s?", "", commit_message_lines[0].strip()
@@ -37,26 +37,38 @@ def extract_relnotes(commit_message_lines):
   """Extracts relnotes from a commit message (passed in as a list of lines)."""
   relnote_lines = []
   in_relnote = False
+
+  title = extract_title(commit_message_lines)
+  issue_id = re.search(r"\(\#[0-9]+\)$", title.strip().split()[-1])
+
   for line in commit_message_lines:
-    if not line or line.startswith("PiperOrigin-RevId:"):
+    line = line.strip()
+    if (
+        not line
+        or line.startswith("PiperOrigin-RevId:")
+        or re.match(r"^\s*(Fixes|Closes)\s+#\d+\.?\s*$", line)
+    ):
       in_relnote = False
     m = re.match(r"^RELNOTES(?:\[(INC|NEW)\])?:", line)
     if m is not None:
       in_relnote = True
-      line = line[len(m[0]):]
+      line = line[len(m[0]) :]
+      if line.strip().lower().rstrip(".") in ["n/a", "na", "none"]:
+        return None
       if m[1] == "INC":
         line = "**[Incompatible]** " + line.strip()
     line = line.strip()
     if in_relnote and line:
       relnote_lines.append(line)
   relnote = " ".join(relnote_lines)
-  relnote_lower = relnote.strip().lower().rstrip(".")
-  if relnote_lower == "n/a" or relnote_lower == "none" or not relnote_lower:
-    return None
+
+  if issue_id and relnote:
+    relnote += " " + issue_id.group(0).strip()
+
   return relnote
 
 
-def get_relnotes_between(base, head, is_major_release):
+def get_relnotes_between(base, head, is_patch_release):
   """Gets all relnotes for commits between `base` and `head`."""
   commits = git("rev-list", f"{base}..{head}")
   if commits == [""]:
@@ -75,7 +87,7 @@ def get_relnotes_between(base, head, is_major_release):
       # The rollback commit itself is also skipped.
       continue
     relnote = (
-        extract_relnotes(lines) if is_major_release else extract_pr_title(lines)
+        extract_title(lines) if is_patch_release else extract_relnotes(lines)
     )
     if relnote is not None:
       relnotes.append(relnote)
@@ -151,6 +163,20 @@ def get_external_authors_between(base, head):
   return ", ".join(sorted(authors.union(coauthors), key=str.casefold))
 
 
+def get_filtered_notes(base, previous_release, is_patch_release):
+  # Generate notes for all commits from last branch cut to HEAD, but filter out
+  # any identical notes from the previous release branch.
+  cur_release_relnotes = get_relnotes_between(
+      base, "HEAD", is_patch_release
+  )
+  last_release_relnotes = set(
+      get_relnotes_between(base, previous_release, is_patch_release)
+  )
+  return [
+      note for note in cur_release_relnotes if note not in last_release_relnotes
+  ]
+
+
 if __name__ == "__main__":
   # Get last release and make sure it's consistent with current X.Y.Z release
   # e.g. if current_release is 5.3.3, last_release should be 5.3.2 even if
@@ -166,7 +192,7 @@ if __name__ == "__main__":
       print("Error: Not a release branch.")
       sys.exit(1)
 
-  is_major = bool(re.fullmatch(r"\d+.0.0", current_release))
+  is_patch = not current_release.endswith(".0")
 
   tags = [tag for tag in git("tag", "--sort=refname") if "pre" not in tag]
 
@@ -181,35 +207,28 @@ if __name__ == "__main__":
   # base with the last release so that we know which commits to generate notes
   # for.
   merge_base = git("merge-base", "HEAD", last_release)[0]
-  print("Baseline: ", merge_base)
 
-  # Generate notes for all commits from last branch cut to HEAD, but filter out
-  # any identical notes from the previous release branch.
-  cur_release_relnotes = get_relnotes_between(merge_base, "HEAD", is_major)
-  last_release_relnotes = set(
-      get_relnotes_between(merge_base, last_release, is_major)
-  )
-  filtered_relnotes = [
-      note for note in cur_release_relnotes if note not in last_release_relnotes
-  ]
+  filtered_relnotes = get_filtered_notes(merge_base, last_release, is_patch)
 
   # Reverse so that the notes are in chronological order.
   filtered_relnotes.reverse()
   print()
   print("Release Notes:")
+  print()
 
-  if len(sys.argv) >= 2 and sys.argv[1] == "sort":
-    print()
-    categorized_release_notes = get_categorized_relnotes(filtered_relnotes)
-    for label in categorized_release_notes:
-      print(label + ":")
-      for note in categorized_release_notes[label]:
-        print("+", note)
-      print()
-  else:
-    print()
-    for note in filtered_relnotes:
+  # For minor releases w/o any RELNOTES tags, follow the patch release format to
+  # get release notes (PR title instead of RELNOTES tag)
+  # Not applicable for major or patch releases
+  if all(not note for note in filtered_relnotes) and is_patch == 0:
+    is_patch = True
+    filtered_relnotes = get_filtered_notes(merge_base, last_release, is_patch)
+
+  categorized_release_notes = get_categorized_relnotes(filtered_relnotes)
+  for label in categorized_release_notes:
+    print(label + ":")
+    for note in categorized_release_notes[label]:
       print("+", note)
+    print()
 
   print()
   print("Acknowledgements:")

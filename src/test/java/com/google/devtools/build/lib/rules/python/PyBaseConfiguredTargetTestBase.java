@@ -19,7 +19,6 @@ import static com.google.devtools.build.lib.rules.python.PythonTestUtils.getPyLo
 
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
-import java.util.regex.Pattern;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -42,21 +41,6 @@ public abstract class PyBaseConfiguredTargetTestBase extends BuildViewTestCase {
   /** Retrieves the Python version of a configured target. */
   protected PythonVersion getPythonVersion(ConfiguredTarget ct) {
     return getConfiguration(ct).getOptions().get(PythonOptions.class).getPythonVersion();
-  }
-
-  @Test
-  public void badSrcsVersionValue() throws Exception {
-    checkError(
-        "pkg",
-        "foo",
-        // error:
-        Pattern.compile(".*invalid value.*srcs_version.*"),
-        // build file:
-        bzlLoad,
-        ruleName + "(",
-        "    name = 'foo',",
-        "    srcs_version = 'doesnotexist',",
-        "    srcs = ['foo.py'])");
   }
 
   @Test
@@ -126,11 +110,14 @@ public abstract class PyBaseConfiguredTargetTestBase extends BuildViewTestCase {
   public void requiresProvider() throws Exception {
     scratch.file(
         "pkg/rules.bzl",
-        "def _myrule_impl(ctx):",
-        "    return []",
-        "myrule = rule(",
-        "    implementation = _myrule_impl,",
-        ")");
+        """
+        def _myrule_impl(ctx):
+            return []
+
+        myrule = rule(
+            implementation = _myrule_impl,
+        )
+        """);
     checkError(
         "pkg",
         "foo",
@@ -163,50 +150,5 @@ public abstract class PyBaseConfiguredTargetTestBase extends BuildViewTestCase {
     assertThat(PyInfo.fromTarget(target).getUsesSharedLibraries()).isTrue();
   }
 
-  @Test
-  public void disallowNativeRulesWorks() throws Exception {
-    // Skip this for Google builds, otherwise it fails because the Google version of the builtin
-    // rules have additional dependencies that use rules_python providers, which the builtin rules
-    // can't accept.
-    if (!analysisMock.isThisBazel()) {
-      return;
-    }
-    reporter.removeHandler(failFastHandler); // expect errors
-    scratch.file(
-        "pkg/BUILD", //
-        ruleName + "(",
-        "    name = 'foo',",
-        "    srcs = ['foo.py'],",
-        ")");
 
-    useConfiguration("--incompatible_python_disallow_native_rules");
-    getConfiguredTarget("//pkg:foo");
-    assertContainsEvent(Pattern.compile("not allowed to use native"));
-  }
-
-  @Test
-  public void nativeRulesAllowlistWorks() throws Exception {
-    // Skip this for Google builds, otherwise it fails because the Google version of the builtin
-    // rules have additional dependencies that use rules_python providers, which the builtin rules
-    // can't accept.
-    if (!analysisMock.isThisBazel()) {
-      return;
-    }
-    scratch.file(
-        "pkg/BUILD",
-        ruleName + "(",
-        "    name = 'foo',",
-        "    srcs = ['foo.py'],",
-        ")",
-        "package_group(",
-        "    name = 'allowed',",
-        "    packages = ['//...'],",
-        ")");
-
-    useConfiguration(
-        "--incompatible_python_disallow_native_rules",
-        "--python_native_rules_allowlist=//pkg:allowed");
-    getConfiguredTarget("//pkg:foo");
-    assertNoEvents();
-  }
 }

@@ -16,8 +16,6 @@ package com.google.devtools.build.lib.analysis;
 
 import static com.google.devtools.build.lib.analysis.config.BuildConfigurationValue.configurationId;
 import static com.google.devtools.build.lib.buildeventstream.TestFileNameConstants.BASELINE_COVERAGE;
-import static java.nio.charset.StandardCharsets.ISO_8859_1;
-import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
@@ -30,7 +28,6 @@ import com.google.devtools.build.lib.actions.CompletionContext;
 import com.google.devtools.build.lib.actions.CompletionContext.ArtifactReceiver;
 import com.google.devtools.build.lib.actions.EventReportingArtifacts;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
-import com.google.devtools.build.lib.actions.FileArtifactValue.UnresolvedSymlinkArtifactValue;
 import com.google.devtools.build.lib.analysis.TopLevelArtifactHelper.ArtifactsInOutputGroup;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.analysis.test.InstrumentedFilesInfo;
@@ -41,7 +38,9 @@ import com.google.devtools.build.lib.buildeventstream.ArtifactGroupNamer;
 import com.google.devtools.build.lib.buildeventstream.BuildEvent;
 import com.google.devtools.build.lib.buildeventstream.BuildEvent.LocalFile.LocalFileType;
 import com.google.devtools.build.lib.buildeventstream.BuildEventContext;
+import com.google.devtools.build.lib.buildeventstream.BuildEventContext.OutputGroupFileMode;
 import com.google.devtools.build.lib.buildeventstream.BuildEventIdUtil;
+import com.google.devtools.build.lib.buildeventstream.BuildEventProtocolOptions.OutputGroupFileModes;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEventId;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.File;
@@ -61,13 +60,16 @@ import com.google.devtools.build.lib.skyframe.ConfiguredTargetAndData;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.DetailedExitCode.DetailedExitCodeComparator;
-import com.google.devtools.build.lib.util.OS;
+import com.google.devtools.build.lib.util.StringEncoding;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.skyframe.SkyValue;
 import com.google.protobuf.util.Durations;
 import java.util.Collection;
+import java.util.List;
+import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import javax.annotation.Nullable;
 
 /** This event is fired as soon as a target is either built or fails. */
@@ -116,7 +118,8 @@ public final class TargetCompleteEvent
   private final ImmutableList<BuildEventId> postedAfter;
   private final CompletionContext completionContext;
   private final ImmutableMap<String, ArtifactsInOutputGroup> outputs;
-  private final NestedSet<Artifact> baselineCoverageArtifacts;
+  @Nullable private final Artifact baselineCoverageArtifact;
+  @Nullable private final LocalFile baselineCoverage;
   // The label as appeared in the BUILD file.
   private final Label originalLabel;
   private final boolean isTest;
@@ -146,7 +149,7 @@ public final class TargetCompleteEvent
         ConfiguredTargetKey.fromConfiguredTarget(targetAndData.getConfiguredTarget());
     postedAfterBuilder.add(BuildEventIdUtil.targetConfigured(originalLabel));
     DetailedExitCode mostImportantDetailedExitCode = null;
-    for (Cause cause : getRootCauses().toList()) {
+    for (Cause cause : this.rootCauses.toList()) {
       mostImportantDetailedExitCode =
           DetailedExitCodeComparator.chooseMoreImportantWithFirstIfTie(
               mostImportantDetailedExitCode, cause.getDetailedExitCode());
@@ -165,22 +168,26 @@ public final class TargetCompleteEvent
         isTest
             ? targetAndData.getConfiguredTarget().getProvider(TestProvider.class).getTestParams()
             : null;
+    this.baselineCoverageArtifact = baselineCoverageArtifact(targetAndData);
+    this.baselineCoverage =
+        baselineCoverageArtifact == null
+            ? null
+            : new LocalFile(
+                completionContext.pathResolver().toPath(baselineCoverageArtifact),
+                LocalFileType.COVERAGE_OUTPUT,
+                completionContext.getBaselineCoverageValue());
+    this.postedAfter = postedAfterBuilder.build();
+    this.tags = targetAndData.getRuleTags();
+  }
+
+  @Nullable
+  private static Artifact baselineCoverageArtifact(ConfiguredTargetAndData targetAndData) {
     InstrumentedFilesInfo instrumentedFilesProvider =
         targetAndData.getConfiguredTarget().get(InstrumentedFilesInfo.STARLARK_CONSTRUCTOR);
     if (instrumentedFilesProvider == null) {
-      this.baselineCoverageArtifacts = null;
-    } else {
-      NestedSet<Artifact> baselineCoverageArtifacts =
-          instrumentedFilesProvider.getBaselineCoverageArtifacts();
-      if (!baselineCoverageArtifacts.isEmpty()) {
-        this.baselineCoverageArtifacts = baselineCoverageArtifacts;
-        postedAfterBuilder.add(BuildEventIdUtil.coverageActionsFinished());
-      } else {
-        this.baselineCoverageArtifacts = null;
-      }
+      return null;
     }
-    this.postedAfter = postedAfterBuilder.build();
-    this.tags = targetAndData.getRuleTags();
+    return instrumentedFilesProvider.getBaselineCoverageArtifact();
   }
 
   /** Construct a successful target completion event. */
@@ -259,7 +266,7 @@ public final class TargetCompleteEvent
     }
     return Iterables.filter(
         builder.build().toList(),
-        (artifact) -> !artifact.isSourceArtifact() && !artifact.isMiddlemanArtifact());
+        (artifact) -> !artifact.isSourceArtifact() && !artifact.isRunfilesTree());
   }
 
   @Override
@@ -270,7 +277,7 @@ public final class TargetCompleteEvent
   @Override
   public ImmutableList<BuildEventId> getChildrenEvents() {
     ImmutableList.Builder<BuildEventId> childrenBuilder = ImmutableList.builder();
-    for (Cause cause : getRootCauses().toList()) {
+    for (Cause cause : rootCauses.toList()) {
       childrenBuilder.add(cause.getIdProto());
     }
     if (isTest) {
@@ -302,18 +309,22 @@ public final class TargetCompleteEvent
   // TODO(aehlig): remove as soon as we managed to get rid of the deprecated "important_output"
   // field.
 
-  private static void addImportantOutputs(
+  private static void addFilesDirectlyToProtoField(
       CompletionContext completionContext,
       TargetComplete.Builder builder,
       BuildEventContext converters,
       Iterable<Artifact> artifacts) {
-    addImportantOutputs(
-        completionContext, builder, Artifact::getRootRelativePathString, converters, artifacts);
+    addFilesDirectlyToProtoField(
+        completionContext,
+        builder::addImportantOutput,
+        Artifact::getRootRelativePathString,
+        converters,
+        artifacts);
   }
 
-  private static void addImportantOutputs(
+  private static void addFilesDirectlyToProtoField(
       CompletionContext completionContext,
-      BuildEventStreamProtos.TargetComplete.Builder builder,
+      Consumer<BuildEventStreamProtos.File> addFile,
       Function<Artifact, String> artifactNameFunction,
       BuildEventContext converters,
       Iterable<Artifact> artifacts) {
@@ -329,7 +340,7 @@ public final class TargetCompleteEvent
                 newFileFromArtifact(name, artifact, completionContext, uri);
             // Omit files with unknown contents (e.g. if uploading failed).
             if (file.getFileCase() != BuildEventStreamProtos.File.FileCase.FILE_NOT_SET) {
-              builder.addImportantOutput(file);
+              addFile.accept(file);
             }
           }
 
@@ -352,26 +363,21 @@ public final class TargetCompleteEvent
       CompletionContext completionContext,
       @Nullable String uri) {
     if (name == null) {
-      name = artifact.getRootRelativePath().getRelative(relPath).getPathString();
-      if (OS.getCurrent() != OS.WINDOWS) {
-        // TODO(b/36360490): Unix file names are currently always Latin-1 strings, even if they
-        // contain UTF-8 bytes. Protobuf specifies string fields to contain UTF-8 and passing a
-        // "Latin-1 with UTF-8 bytes" string will lead to double-encoding the bytes with the high
-        // bit set. Until we address the pervasive use of "Latin-1 with UTF-8 bytes" throughout
-        // Bazel (eg. by standardizing on UTF-8 on Unix systems) we will need to silently swap out
-        // the encoding at the protobuf library boundary. Windows does not suffer from this issue
-        // due to the corresponding OS APIs supporting UTF-16.
-        name = new String(name.getBytes(ISO_8859_1), UTF_8);
-      }
+      name =
+          StringEncoding.internalToUnicode(
+              artifact.getRootRelativePath().getRelative(relPath).getPathString());
     }
     File.Builder file =
         File.newBuilder()
             .setName(name)
-            .addAllPathPrefix(artifact.getRoot().getExecPath().segments());
+            .addAllPathPrefix(
+                Iterables.transform(
+                    artifact.getRoot().getExecPath().segments(),
+                    StringEncoding::internalToUnicode));
     FileArtifactValue fileArtifactValue = completionContext.getFileArtifactValue(artifact);
-    if (fileArtifactValue instanceof UnresolvedSymlinkArtifactValue) {
+    if (fileArtifactValue != null && fileArtifactValue.getType().isSymlink()) {
       file.setSymlinkTargetPath(
-          ((UnresolvedSymlinkArtifactValue) fileArtifactValue).getSymlinkTarget());
+          StringEncoding.internalToUnicode(fileArtifactValue.getUnresolvedSymlinkTarget()));
     } else if (fileArtifactValue != null && fileArtifactValue.getType().exists()) {
       byte[] digest = fileArtifactValue.getDigest();
       if (digest != null) {
@@ -380,7 +386,7 @@ public final class TargetCompleteEvent
       file.setLength(fileArtifactValue.getSize());
     }
     if (uri != null) {
-      file.setUri(uri);
+      file.setUri(StringEncoding.internalToUnicode(uri));
     }
     return file.build();
   }
@@ -411,7 +417,6 @@ public final class TargetCompleteEvent
                     new LocalFile(
                         completionContext.pathResolver().toPath(artifact),
                         LocalFileType.forArtifact(artifact, metadata),
-                        artifact,
                         metadata));
               }
 
@@ -423,16 +428,8 @@ public final class TargetCompleteEvent
             });
       }
     }
-    if (baselineCoverageArtifacts != null) {
-      for (Artifact artifact : baselineCoverageArtifacts.toList()) {
-        // TODO(b/199940216): Coverage artifacts don't have metadata available.
-        builder.add(
-            new LocalFile(
-                completionContext.pathResolver().toPath(artifact),
-                LocalFileType.COVERAGE_OUTPUT,
-                /*artifact=*/ null,
-                /*artifactMetadata=*/ null));
-      }
+    if (baselineCoverage != null) {
+      builder.add(baselineCoverage);
     }
     return builder.build();
   }
@@ -454,8 +451,7 @@ public final class TargetCompleteEvent
         builder.setFailureDetail(failureDetail);
       }
     }
-    builder.addAllTag(getTags());
-    builder.addAllOutputGroup(getOutputFilesByGroup(converters.artifactGroupNamer()));
+    builder.addAllTag(tags).addAllOutputGroup(getOutputFilesByGroup(converters));
 
     if (isTest) {
       builder.setTestTimeout(Durations.fromSeconds(testTimeoutSeconds));
@@ -471,14 +467,15 @@ public final class TargetCompleteEvent
     }
     // TODO(aehlig): remove direct reporting of artifacts as soon as clients no longer need it.
     if (converters.getOptions().legacyImportantOutputs) {
-      addImportantOutputs(completionContext, builder, converters, filteredImportantArtifacts);
-      if (baselineCoverageArtifacts != null) {
-        addImportantOutputs(
+      addFilesDirectlyToProtoField(
+          completionContext, builder, converters, filteredImportantArtifacts);
+      if (baselineCoverage != null) {
+        addFilesDirectlyToProtoField(
             completionContext,
-            builder,
+            builder::addImportantOutput,
             artifact -> BASELINE_COVERAGE,
             converters,
-            baselineCoverageArtifacts.toList());
+            ImmutableList.of(baselineCoverageArtifact));
       }
     }
 
@@ -492,8 +489,9 @@ public final class TargetCompleteEvent
   }
 
   @Override
-  public ReportedArtifacts reportedArtifacts() {
-    return toReportedArtifacts(outputs, completionContext, baselineCoverageArtifacts);
+  public ReportedArtifacts reportedArtifacts(OutputGroupFileModes outputGroupFileModes) {
+    return toReportedArtifacts(
+        outputs, completionContext, baselineCoverageArtifact, outputGroupFileModes);
   }
 
   @Override
@@ -504,15 +502,25 @@ public final class TargetCompleteEvent
   static ReportedArtifacts toReportedArtifacts(
       ImmutableMap<String, ArtifactsInOutputGroup> outputs,
       CompletionContext completionContext,
-      @Nullable NestedSet<Artifact> baselineCoverageArtifacts) {
+      @Nullable Artifact baselineCoverageArtifact,
+      OutputGroupFileModes outputGroupFileModes) {
     ImmutableSet.Builder<NestedSet<Artifact>> builder = ImmutableSet.builder();
-    for (ArtifactsInOutputGroup artifactsInGroup : outputs.values()) {
+    for (var entry : outputs.entrySet()) {
+      String groupName = entry.getKey();
+      OutputGroupFileMode mode = outputGroupFileModes.getMode(groupName);
+      var artifactsInGroup = entry.getValue();
       if (artifactsInGroup.areImportant()) {
-        builder.add(artifactsInGroup.getArtifacts());
+        if (mode == OutputGroupFileMode.NAMED_SET_OF_FILES_ONLY
+            || mode == OutputGroupFileMode.BOTH) {
+          builder.add(artifactsInGroup.getArtifacts());
+        }
       }
     }
-    if (baselineCoverageArtifacts != null) {
-      builder.add(baselineCoverageArtifacts);
+    if (baselineCoverageArtifact != null) {
+      OutputGroupFileMode mode = outputGroupFileModes.getMode(BASELINE_COVERAGE);
+      if (mode == OutputGroupFileMode.NAMED_SET_OF_FILES_ONLY || mode == OutputGroupFileMode.BOTH) {
+        builder.add(NestedSetBuilder.create(Order.STABLE_ORDER, baselineCoverageArtifact));
+      }
     }
     return new ReportedArtifacts(builder.build(), completionContext);
   }
@@ -522,40 +530,73 @@ public final class TargetCompleteEvent
     return configurationEvent != null ? ImmutableList.of(configurationEvent) : ImmutableList.of();
   }
 
-  private Iterable<String> getTags() {
-    return tags;
-  }
-
-  private Iterable<OutputGroup> getOutputFilesByGroup(ArtifactGroupNamer namer) {
-    return toOutputGroupProtos(outputs, namer, baselineCoverageArtifacts);
+  private ImmutableList<OutputGroup> getOutputFilesByGroup(BuildEventContext converters) {
+    return toOutputGroupProtos(outputs, baselineCoverageArtifact, completionContext, converters);
   }
 
   /** Returns {@link OutputGroup} protos for given output groups and optional coverage artifacts. */
   static ImmutableList<OutputGroup> toOutputGroupProtos(
       ImmutableMap<String, ArtifactsInOutputGroup> outputs,
-      ArtifactGroupNamer namer,
-      @Nullable NestedSet<Artifact> baselineCoverageArtifacts) {
+      @Nullable Artifact baselineCoverageArtifact,
+      CompletionContext completionContext,
+      BuildEventContext converters) {
     ImmutableList.Builder<OutputGroup> groups = ImmutableList.builder();
     outputs.forEach(
         (outputGroup, artifactsInOutputGroup) -> {
           if (!artifactsInOutputGroup.areImportant()) {
             return;
           }
+          NestedSet<Artifact> artifacts = artifactsInOutputGroup.getArtifacts();
           groups.add(
-              OutputGroup.newBuilder()
-                  .setName(outputGroup)
-                  .setIncomplete(artifactsInOutputGroup.isIncomplete())
-                  .addFileSets(namer.apply(artifactsInOutputGroup.getArtifacts().toNode()))
-                  .build());
+              makeOutputGroupProto(
+                  completionContext,
+                  converters,
+                  outputGroup,
+                  artifactsInOutputGroup.isIncomplete(),
+                  () -> artifacts,
+                  artifacts::toList));
         });
-    if (baselineCoverageArtifacts != null) {
+    if (baselineCoverageArtifact != null) {
       groups.add(
-          OutputGroup.newBuilder()
-              .setName(BASELINE_COVERAGE)
-              .addFileSets(namer.apply(baselineCoverageArtifacts.toNode()))
-              .build());
+          makeOutputGroupProto(
+              completionContext,
+              converters,
+              BASELINE_COVERAGE,
+              /* outputGroupIncomplete= */ false,
+              () -> NestedSetBuilder.create(Order.STABLE_ORDER, baselineCoverageArtifact),
+              () -> ImmutableList.of(baselineCoverageArtifact)));
     }
     return groups.build();
+  }
+
+  /**
+   * Constructs an {@link OutputGroup} message based on how the group has been configured to report
+   * its artifacts on the command-line.
+   */
+  private static OutputGroup makeOutputGroupProto(
+      CompletionContext completionContext,
+      BuildEventContext converters,
+      String outputGroup,
+      boolean outputGroupIncomplete,
+      Supplier<NestedSet<Artifact>> artifactsToReport,
+      Supplier<List<Artifact>> artifactListSupplier) {
+    OutputGroup.Builder builder =
+        OutputGroup.newBuilder().setName(outputGroup).setIncomplete(outputGroupIncomplete);
+    OutputGroupFileMode fileMode = converters.getFileModeForOutputGroup(outputGroup);
+    if (fileMode == OutputGroupFileMode.NAMED_SET_OF_FILES_ONLY
+        || fileMode == OutputGroupFileMode.BOTH) {
+      ArtifactGroupNamer namer = converters.artifactGroupNamer();
+      builder.addFileSets(namer.apply(artifactsToReport.get().toNode()));
+    }
+    if (fileMode == OutputGroupFileMode.INLINE_ONLY || fileMode == OutputGroupFileMode.BOTH) {
+      addFilesDirectlyToProtoField(
+          completionContext,
+          builder::addInlineFiles,
+          Artifact::getRootRelativePathString,
+          converters,
+          artifactListSupplier.get());
+    }
+    return builder.build();
   }
 
   /**
@@ -571,6 +612,6 @@ public final class TargetCompleteEvent
         .getFragment(TestConfiguration.class)
         .getTestTimeout()
         .get(categoricalTimeout)
-        .getSeconds();
+        .toSeconds();
   }
 }

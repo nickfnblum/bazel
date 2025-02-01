@@ -16,17 +16,19 @@ package com.google.devtools.build.lib.skyframe.toolchains;
 
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.devtools.build.skyframe.EvaluationResultSubjectFactory.assertThatEvaluationResult;
+import static java.util.Objects.requireNonNull;
 
-import com.google.auto.value.AutoValue;
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
+import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
+import com.google.devtools.build.lib.analysis.config.ToolchainTypeRequirement;
 import com.google.devtools.build.lib.analysis.platform.ToolchainTypeInfo;
 import com.google.devtools.build.lib.analysis.util.AnalysisMock;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.NoSuchPackageException;
 import com.google.devtools.build.lib.rules.platform.ToolchainTestCase;
-import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.skyframe.toolchains.ToolchainTypeLookupUtil.InvalidToolchainTypeException;
 import com.google.devtools.build.lib.skyframe.util.SkyframeExecutorTestUtils;
 import com.google.devtools.build.skyframe.EvaluationResult;
@@ -72,13 +74,9 @@ public class ToolchainTypeLookupUtilTest extends ToolchainTestCase {
 
   @Test
   public void testToolchainTypeLookup() throws Exception {
-    ConfiguredTargetKey testToolchainTypeKey =
-        ConfiguredTargetKey.builder()
-            .setLabel(testToolchainTypeLabel)
-            .setConfigurationKey(targetConfigKey)
-            .build();
     GetToolchainTypeInfoKey key =
-        GetToolchainTypeInfoKey.create(ImmutableList.of(testToolchainTypeKey));
+        GetToolchainTypeInfoKey.create(
+            targetConfig, ToolchainTypeRequirement.create(testToolchainTypeLabel));
 
     EvaluationResult<GetToolchainTypeInfoValue> result = getToolchainTypeInfo(key);
 
@@ -95,13 +93,9 @@ public class ToolchainTypeLookupUtilTest extends ToolchainTestCase {
     scratch.file(
         "alias/BUILD", "alias(name = 'toolchain_type', actual = '" + testToolchainTypeLabel + "')");
     Label aliasToolchainTypeLabel = Label.parseCanonicalUnchecked("//alias:toolchain_type");
-    ConfiguredTargetKey testToolchainTypeKey =
-        ConfiguredTargetKey.builder()
-            .setLabel(aliasToolchainTypeLabel)
-            .setConfigurationKey(targetConfigKey)
-            .build();
     GetToolchainTypeInfoKey key =
-        GetToolchainTypeInfoKey.create(ImmutableList.of(testToolchainTypeKey));
+        GetToolchainTypeInfoKey.create(
+            targetConfig, ToolchainTypeRequirement.create(aliasToolchainTypeLabel));
 
     EvaluationResult<GetToolchainTypeInfoValue> result = getToolchainTypeInfo(key);
 
@@ -122,12 +116,11 @@ public class ToolchainTypeLookupUtilTest extends ToolchainTestCase {
   public void testToolchainTypeLookup_targetNotToolchainType() throws Exception {
     scratch.file("invalid/BUILD", "filegroup(name = 'not_a_toolchain_type')");
 
-    ConfiguredTargetKey targetKey =
-        ConfiguredTargetKey.builder()
-            .setLabel(Label.parseCanonicalUnchecked("//invalid:not_a_toolchain_type"))
-            .setConfigurationKey(targetConfigKey)
-            .build();
-    GetToolchainTypeInfoKey key = GetToolchainTypeInfoKey.create(ImmutableList.of(targetKey));
+    GetToolchainTypeInfoKey key =
+        GetToolchainTypeInfoKey.create(
+            targetConfig,
+            ToolchainTypeRequirement.create(
+                Label.parseCanonicalUnchecked("//invalid:not_a_toolchain_type")));
 
     EvaluationResult<GetToolchainTypeInfoValue> result = getToolchainTypeInfo(key);
 
@@ -144,13 +137,30 @@ public class ToolchainTypeLookupUtilTest extends ToolchainTestCase {
   }
 
   @Test
+  public void testToolchainTypeLookup_targetNotToolchainType_ignoreInvalid() throws Exception {
+    scratch.file("invalid/BUILD", "filegroup(name = 'not_a_toolchain_type')");
+
+    GetToolchainTypeInfoKey key =
+        GetToolchainTypeInfoKey.create(
+            targetConfig,
+            ToolchainTypeRequirement.builder(
+                    Label.parseCanonicalUnchecked("//invalid:not_a_toolchain_type"))
+                .ignoreIfInvalid(true)
+                .build());
+
+    EvaluationResult<GetToolchainTypeInfoValue> result = getToolchainTypeInfo(key);
+
+    assertThatEvaluationResult(result).hasNoError();
+    Map<Label, ToolchainTypeInfo> toolchainTypes = result.get(key).toolchainTypes();
+    assertThat(toolchainTypes).isEmpty();
+  }
+
+  @Test
   public void testToolchainTypeLookup_targetDoesNotExist() throws Exception {
-    ConfiguredTargetKey targetKey =
-        ConfiguredTargetKey.builder()
-            .setLabel(Label.parseCanonicalUnchecked("//fake:missing"))
-            .setConfigurationKey(targetConfigKey)
-            .build();
-    GetToolchainTypeInfoKey key = GetToolchainTypeInfoKey.create(ImmutableList.of(targetKey));
+    GetToolchainTypeInfoKey key =
+        GetToolchainTypeInfoKey.create(
+            targetConfig,
+            ToolchainTypeRequirement.create(Label.parseCanonicalUnchecked("//fake:missing")));
 
     reporter.removeHandler(failFastHandler);
     EvaluationResult<GetToolchainTypeInfoValue> result = getToolchainTypeInfo(key);
@@ -169,21 +179,29 @@ public class ToolchainTypeLookupUtilTest extends ToolchainTestCase {
     assertContainsEvent("no such package 'fake': BUILD file not found");
   }
 
+  // TODO: b/381396141 - Add a regression test for failure to find the second Skyframe value.
+
   // Calls ToolchainTypeLookupUtil.getToolchainTypeInfo.
   private static final SkyFunctionName GET_TOOLCHAIN_TYPE_INFO_FUNCTION =
       SkyFunctionName.createHermetic("GET_TOOLCHAIN_TYPE_INFO_FUNCTION");
 
-  @AutoValue
-  abstract static class GetToolchainTypeInfoKey implements SkyKey {
+  @AutoCodec
+  record GetToolchainTypeInfoKey(
+      ImmutableSet<ToolchainTypeRequirement> toolchainTypes, BuildConfigurationValue configuration)
+      implements SkyKey {
+    GetToolchainTypeInfoKey {
+      requireNonNull(toolchainTypes, "toolchainTypes");
+      requireNonNull(configuration, "configuration");
+    }
+
     @Override
     public SkyFunctionName functionName() {
       return GET_TOOLCHAIN_TYPE_INFO_FUNCTION;
     }
 
-    abstract Iterable<ConfiguredTargetKey> toolchainTypeKeys();
-
-    public static GetToolchainTypeInfoKey create(Iterable<ConfiguredTargetKey> toolchainTypeKeys) {
-      return new AutoValue_ToolchainTypeLookupUtilTest_GetToolchainTypeInfoKey(toolchainTypeKeys);
+    public static GetToolchainTypeInfoKey create(
+        BuildConfigurationValue configuration, ToolchainTypeRequirement... toolchainTypes) {
+      return new GetToolchainTypeInfoKey(ImmutableSet.copyOf(toolchainTypes), configuration);
     }
   }
 
@@ -199,12 +217,15 @@ public class ToolchainTypeLookupUtilTest extends ToolchainTestCase {
     }
   }
 
-  @AutoValue
-  abstract static class GetToolchainTypeInfoValue implements SkyValue {
-    abstract Map<Label, ToolchainTypeInfo> toolchainTypes();
+  @AutoCodec
+  record GetToolchainTypeInfoValue(Map<Label, ToolchainTypeInfo> toolchainTypes)
+      implements SkyValue {
+    GetToolchainTypeInfoValue {
+      requireNonNull(toolchainTypes, "toolchainTypes");
+    }
 
     static GetToolchainTypeInfoValue create(Map<Label, ToolchainTypeInfo> toolchainTypes) {
-      return new AutoValue_ToolchainTypeLookupUtilTest_GetToolchainTypeInfoValue(toolchainTypes);
+      return new GetToolchainTypeInfoValue(toolchainTypes);
     }
   }
 
@@ -217,7 +238,8 @@ public class ToolchainTypeLookupUtilTest extends ToolchainTestCase {
       GetToolchainTypeInfoKey key = (GetToolchainTypeInfoKey) skyKey;
       try {
         Map<Label, ToolchainTypeInfo> toolchainTypes =
-            ToolchainTypeLookupUtil.resolveToolchainTypes(env, key.toolchainTypeKeys());
+            ToolchainTypeLookupUtil.resolveToolchainTypes(
+                env, key.toolchainTypes(), key.configuration());
         if (env.valuesMissing()) {
           return null;
         }

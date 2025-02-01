@@ -13,7 +13,6 @@
 // limitations under the License.
 package com.google.devtools.build.lib.analysis.config.transitions;
 
-import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
 import com.google.devtools.build.lib.analysis.config.BuildOptionsView;
@@ -22,6 +21,7 @@ import com.google.devtools.build.lib.analysis.config.CoreOptions;
 import com.google.devtools.build.lib.analysis.config.FragmentOptions;
 import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.SerializationConstant;
+import com.google.devtools.build.lib.starlarkbuildapi.config.ConfigurationTransitionApi;
 
 /**
  * Transitions to a stable, empty configuration for rules that don't rely on configuration.
@@ -43,6 +43,17 @@ import com.google.devtools.build.lib.skyframe.serialization.autocodec.Serializat
 public class NoConfigTransition implements PatchTransition {
 
   @SerializationConstant public static final NoConfigTransition INSTANCE = new NoConfigTransition();
+  private static final TransitionFactory<? extends TransitionFactory.Data> FACTORY_INSTANCE =
+      new Factory<>();
+
+  /**
+   * Returns {@code true} if the given {@link TransitionFactory} is an instance of the no
+   * transition.
+   */
+  public static <T extends TransitionFactory.Data> boolean isInstance(
+      TransitionFactory<T> instance) {
+    return instance instanceof Factory;
+  }
 
   private NoConfigTransition() {}
 
@@ -57,16 +68,23 @@ public class NoConfigTransition implements PatchTransition {
   }
 
   /** Returns a {@link TransitionFactory} instance that generates the transition. */
-  public static <T extends TransitionFactory.Data> TransitionFactory<T> createFactory() {
-    return new AutoValue_NoConfigTransition_Factory<>();
+  public static <T extends TransitionFactory.Data> TransitionFactory<T> getFactory() {
+    @SuppressWarnings("unchecked")
+    TransitionFactory<T> castFactory = (TransitionFactory<T>) FACTORY_INSTANCE;
+    return castFactory;
   }
 
   /** A {@link TransitionFactory} implementation that generates the transition. */
-  @AutoValue
-  abstract static class Factory<T extends TransitionFactory.Data> implements TransitionFactory<T> {
+  record Factory<T extends TransitionFactory.Data>()
+      implements TransitionFactory<T>, ConfigurationTransitionApi {
     @Override
     public PatchTransition create(T unused) {
       return INSTANCE;
+    }
+
+    @Override
+    public TransitionType transitionType() {
+      return TransitionType.ANY;
     }
 
     @Override

@@ -203,7 +203,6 @@ class HttpConnector {
           throw new IOException(describeHttpResponse(connection));
         } else if (code < 500          // 4xx means client seems to have erred quoth RFC7231 § 6.5
                     || code == 501     // Server doesn't support function quoth RFC7231 § 6.6.2
-                    || code == 502     // Host not configured on server cf. RFC7231 § 6.6.3
                     || code == 505) {  // Server refuses to support version quoth RFC7231 § 6.6.6
           // This is a permanent error so we're not going to retry.
           readAllBytesAndClose(connection.getErrorStream());
@@ -214,7 +213,7 @@ class HttpConnector {
           }
           throw new UnrecoverableHttpException(describeHttpResponse(connection));
         } else {
-          // However we will retry on some 5xx errors, particularly 500 and 503.
+          // However we will retry on some 5xx errors, particularly 500, 502 and 503.
           throw new IOException(describeHttpResponse(connection));
         }
       } catch (UnrecoverableHttpException | FileNotFoundException e) {
@@ -233,7 +232,7 @@ class HttpConnector {
         // We don't respect the Retry-After header (RFC7231 § 7.1.3) because it's rarely used and
         // tends to be too conservative when it is. We're already being good citizens by using
         // exponential backoff with jitter. Furthermore RFC law didn't use the magic word "MUST".
-        double rawTimeout = Math.scalb(MIN_RETRY_DELAY_MS, retries);
+        double rawTimeout = Math.scalb((double) MIN_RETRY_DELAY_MS, retries);
         if (!maxRetryTimeout.isZero()) {
           rawTimeout = Math.min(rawTimeout, (double) maxRetryTimeout.toMillis());
         }

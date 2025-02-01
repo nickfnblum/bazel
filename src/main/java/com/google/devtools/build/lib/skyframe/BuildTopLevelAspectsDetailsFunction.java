@@ -30,12 +30,10 @@ import com.google.devtools.build.lib.packages.NativeAspectClass;
 import com.google.devtools.build.lib.packages.StarlarkAspect;
 import com.google.devtools.build.lib.packages.StarlarkAspectClass;
 import com.google.devtools.build.lib.packages.StarlarkDefinedAspect;
-import com.google.devtools.build.lib.server.FailureDetails.Analysis;
 import com.google.devtools.build.lib.server.FailureDetails.Analysis.Code;
-import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.skyframe.AspectKeyCreator.AspectKey;
+import com.google.devtools.build.lib.skyframe.serialization.VisibleForSerialization;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
-import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionException;
 import com.google.devtools.build.skyframe.SkyFunctionName;
@@ -125,15 +123,15 @@ final class BuildTopLevelAspectsDetailsFunction implements SkyFunction {
     AspectsList.Builder builder = new AspectsList.Builder();
 
     for (AspectClass aspectClass : topLevelAspectsClasses) {
-      if (aspectClass instanceof StarlarkAspectClass) {
-        StarlarkAspect starlarkAspect = loadStarlarkAspect(env, (StarlarkAspectClass) aspectClass);
+      if (aspectClass instanceof StarlarkAspectClass starlarkAspectClass) {
+        StarlarkAspect starlarkAspect = loadStarlarkAspect(env, starlarkAspectClass);
         if (starlarkAspect == null) {
           return null;
         }
         try {
           builder.addAspect(starlarkAspect);
         } catch (EvalException e) {
-          env.getListener().handle(Event.error(e.getMessage()));
+          env.getListener().handle(Event.error(e.getInnermostLocation(), e.getMessageWithStack()));
           throw new BuildTopLevelAspectsDetailsFunctionException(
               new TopLevelAspectsDetailsBuildFailedException(
                   e.getMessage(), Code.ASPECT_CREATION_FAILED));
@@ -155,7 +153,7 @@ final class BuildTopLevelAspectsDetailsFunction implements SkyFunction {
         aspectsList.validateTopLevelAspectsParameters(topLevelAspectsParameters);
         return aspectsList.buildAspects(topLevelAspectsParameters);
     } catch (EvalException e) {
-      env.getListener().handle(Event.error(e.getMessage()));
+      env.getListener().handle(Event.error(e.getInnermostLocation(), e.getMessageWithStack()));
       throw new BuildTopLevelAspectsDetailsFunctionException(
           new TopLevelAspectsDetailsBuildFailedException(
               e.getMessage(), Code.ASPECT_CREATION_FAILED));
@@ -173,17 +171,16 @@ final class BuildTopLevelAspectsDetailsFunction implements SkyFunction {
 
   private static AspectDetails buildAspectDetails(
       AspectCollection.AspectDeps aspectDeps, Map<AspectDescriptor, AspectDetails> result) {
-    if (result.containsKey(aspectDeps.getAspect())) {
-      return result.get(aspectDeps.getAspect());
+    if (result.containsKey(aspectDeps.aspect())) {
+      return result.get(aspectDeps.aspect());
     }
 
     ImmutableList.Builder<AspectDetails> dependentAspects = ImmutableList.builder();
-    for (AspectCollection.AspectDeps path : aspectDeps.getUsedAspects()) {
+    for (AspectCollection.AspectDeps path : aspectDeps.usedAspects()) {
       dependentAspects.add(buildAspectDetails(path, result));
     }
 
-    AspectDetails aspectDetails =
-        new AspectDetails(dependentAspects.build(), aspectDeps.getAspect());
+    AspectDetails aspectDetails = new AspectDetails(dependentAspects.build(), aspectDeps.aspect());
     result.put(aspectDetails.getAspectDescriptor(), aspectDetails);
     return aspectDetails;
   }
@@ -192,26 +189,6 @@ final class BuildTopLevelAspectsDetailsFunction implements SkyFunction {
       extends SkyFunctionException {
     BuildTopLevelAspectsDetailsFunctionException(TopLevelAspectsDetailsBuildFailedException cause) {
       super(cause, Transience.PERSISTENT);
-    }
-  }
-
-  private static final class TopLevelAspectsDetailsBuildFailedException extends Exception
-      implements SaneAnalysisException {
-    private final DetailedExitCode detailedExitCode;
-
-    private TopLevelAspectsDetailsBuildFailedException(String errorMessage, Code code) {
-      super(errorMessage);
-      this.detailedExitCode =
-          DetailedExitCode.of(
-              FailureDetail.newBuilder()
-                  .setMessage(errorMessage)
-                  .setAnalysis(Analysis.newBuilder().setCode(code))
-                  .build());
-    }
-
-    @Override
-    public DetailedExitCode getDetailedExitCode() {
-      return detailedExitCode;
     }
   }
 
@@ -249,7 +226,6 @@ final class BuildTopLevelAspectsDetailsFunction implements SkyFunction {
     private final ImmutableMap<String, String> topLevelAspectsParameters;
     private final int hashCode;
 
-    @AutoCodec.Instantiator
     static BuildTopLevelAspectsDetailsKey create(
         ImmutableList<AspectClass> topLevelAspectsClasses,
         ImmutableMap<String, String> topLevelAspectsParameters) {
@@ -258,6 +234,12 @@ final class BuildTopLevelAspectsDetailsFunction implements SkyFunction {
               topLevelAspectsClasses,
               topLevelAspectsParameters,
               Objects.hashCode(topLevelAspectsClasses, topLevelAspectsParameters)));
+    }
+
+    @VisibleForSerialization
+    @AutoCodec.Interner
+    static BuildTopLevelAspectsDetailsKey intern(BuildTopLevelAspectsDetailsKey key) {
+      return interner.intern(key);
     }
 
     private BuildTopLevelAspectsDetailsKey(
@@ -293,10 +275,9 @@ final class BuildTopLevelAspectsDetailsFunction implements SkyFunction {
       if (o == this) {
         return true;
       }
-      if (!(o instanceof BuildTopLevelAspectsDetailsKey)) {
+      if (!(o instanceof BuildTopLevelAspectsDetailsKey that)) {
         return false;
       }
-      BuildTopLevelAspectsDetailsKey that = (BuildTopLevelAspectsDetailsKey) o;
       return hashCode == that.hashCode
           && topLevelAspectsClasses.equals(that.topLevelAspectsClasses)
           && topLevelAspectsParameters.equals(that.topLevelAspectsParameters);

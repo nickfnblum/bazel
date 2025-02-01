@@ -42,7 +42,7 @@ fi
 source "$(rlocation "io_bazel/src/test/shell/integration_test_setup.sh")" \
   || { echo "integration_test_setup.sh not found!" >&2; exit 1; }
 
-# `uname` returns the current platform, e.g "MSYS_NT-10.0" or "Linux".
+# `uname` returns the current platform, e.g. "MSYS_NT-10.0" or "Linux".
 # `tr` converts all upper case letters to lower case.
 # `case` matches the result if the `uname | tr` expression to string prefixes
 # that use the same wildcards as names do in Bash, i.e. "msys*" matches strings
@@ -57,16 +57,9 @@ msys*)
   ;;
 esac
 
-if "$is_windows"; then
-  # Disable MSYS path conversion that converts path-looking command arguments to
-  # Windows paths (even if they arguments are not in fact paths).
-  export MSYS_NO_PATHCONV=1
-  export MSYS2_ARG_CONV_EXCL="*"
-fi
-
 function set_up() {
   add_to_bazelrc "build --package_path=%workspace%"
-  setup_skylib_support
+  add_bazel_skylib "MODULE.bazel"
 }
 
 function tear_down() {
@@ -87,6 +80,22 @@ EOF
 
   expect_log "//peach:brighton"
   expect_log "//peach:harken"
+}
+
+function test_output_to_file() {
+  rm -rf peach
+  mkdir -p peach
+  cat > peach/BUILD <<EOF
+sh_library(name='brighton', deps=[':harken'])
+sh_library(name='harken')
+EOF
+
+  bazel query 'deps(//peach:brighton)' --output_file=$TEST_log > $TEST_TMPDIR/query_stdout
+
+  expect_log "//peach:brighton"
+  expect_log "//peach:harken"
+
+  assert_equals "" "$(<$TEST_TMPDIR/query_stdout)"
 }
 
 function test_invalid_query_fails_parsing() {
@@ -498,9 +507,12 @@ EOF
 }
 
 function test_location_output_source_files() {
+  add_rules_python "MODULE.bazel"
   rm -rf foo
   mkdir -p foo
   cat > foo/BUILD <<EOF
+load('@rules_python//python:py_binary.bzl', 'py_binary')
+
 py_binary(
   name = "main",
   srcs = ["main.py"],
@@ -528,9 +540,12 @@ EOF
 }
 
 function test_proto_output_source_files() {
+  add_rules_python "MODULE.bazel"
   rm -rf foo
   mkdir -p foo
   cat > foo/BUILD <<EOF
+load('@rules_python//python:py_binary.bzl', 'py_binary')
+
 py_binary(
   name = "main",
   srcs = ["main.py"],
@@ -546,9 +561,12 @@ EOF
 }
 
 function test_xml_output_source_files() {
+  add_rules_python "MODULE.bazel"
   rm -rf foo
   mkdir -p foo
   cat > foo/BUILD <<EOF
+load('@rules_python//python:py_binary.bzl', 'py_binary')
+
 py_binary(
   name = "main",
   srcs = ["main.py"],
@@ -972,7 +990,8 @@ EOF
 }
 
 function test_unnecessary_external_workspaces_not_loaded() {
-  cat > WORKSPACE <<'EOF'
+  cat > MODULE.bazel <<'EOF'
+local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "local_repository")
 local_repository(
     name = "notthere",
     path = "/nope",
@@ -1102,6 +1121,217 @@ EOF
   assert_contains "\"ruleInput\":\[\"//$pkg:dummy.txt\"\]" bar_ndjson_file
   assert_contains "\"ruleOutput\":\[\"//$pkg:bar_out.txt\"\]" bar_ndjson_file
   assert_contains "echo unused" bar_ndjson_file
+}
+
+function test_query_factored_graph_output() {
+  mkdir -p foo
+  cat > foo/BUILD <<'EOF'
+sh_binary(
+    name = "a1",
+    srcs = [
+        "a.sh",
+    ],
+    deps = [
+        ":b",
+        ":c1",
+        ":c2",
+    ],
+)
+
+sh_binary(
+    name = "a2",
+    srcs = [
+        "a.sh",
+    ],
+    deps = [
+        ":b",
+        ":c1",
+        ":c2",
+    ],
+)
+
+sh_binary(
+    name = "b",
+    srcs = ["b.sh"],
+)
+
+sh_binary(
+    name = "c1",
+    srcs = ["c.sh"],
+)
+
+sh_binary(
+    name = "c2",
+    srcs = ["c.sh"],
+)
+EOF
+  bazel query --output=graph \
+      --graph:factored \
+      --notool_deps \
+      "deps(//foo:a1 + //foo:a2)" > "$TEST_log" \
+      || fail "Expected success"
+  # Expected factored graph.
+  #      (a1,a2)
+  #     /   \   \
+  #   a.sh   b   (c1,c2)
+  #         /     \
+  #       b.sh    c.sh
+  expect_log "\"//foo:a[12]\\\\n//foo:a[12]\"$"
+  expect_log "\"//foo:a[12]\\\\n//foo:a[12]\" -> \"//foo:a.sh\"$"
+  expect_log "\"//foo:a[12]\\\\n//foo:a[12]\" -> \"//foo:b\"$"
+  expect_log "\"//foo:a[12]\\\\n//foo:a[12]\" -> \"//foo:c[12]\\\n//foo:c[12]\"$"
+  expect_log "\"//foo:a.sh\"$"
+  expect_log "\"//foo:b\"$"
+  expect_log "\"//foo:b\" -> \"//foo:b.sh\"$"
+  expect_log "\"//foo:b.sh\"$"
+  expect_log "\"//foo:c[12]\\\\n//foo:c[12]\" -> \"//foo:c.sh\"$"
+  expect_log "\"//foo:c.sh\"$"
+}
+
+function test_query_non_factored_graph_output() {
+  mkdir -p foo
+  cat > foo/BUILD <<'EOF'
+sh_binary(
+    name = "a1",
+    srcs = [
+        "a.sh",
+    ],
+    deps = [
+        ":b",
+        ":c1",
+        ":c2",
+    ],
+)
+
+sh_binary(
+    name = "a2",
+    srcs = [
+        "a.sh",
+    ],
+    deps = [
+        ":b",
+        ":c1",
+        ":c2",
+    ],
+)
+
+sh_binary(
+    name = "b",
+    srcs = ["b.sh"],
+)
+
+sh_binary(
+    name = "c1",
+    srcs = ["c.sh"],
+)
+
+sh_binary(
+    name = "c2",
+    srcs = ["c.sh"],
+)
+EOF
+  bazel query --output=graph \
+      --nograph:factored \
+      --notool_deps \
+      "deps(//foo:a1 + //foo:a2)" >& "$TEST_log" \
+      || fail "Expected success"
+
+
+  # Expected non-factored graph (combination of all the edges below):
+  #   a1   a2    a1   a2
+  #    \  /        \  /
+  #    a.sh          b
+  #                 /
+  #     a1         b.sh
+  #   / a2 \
+  #  / /  \ \
+  #  c1    c2
+  #   \    /
+  #    c.sh
+  expect_log "\"//foo:a1\"$"
+  expect_log "\"//foo:a2\"$"
+  expect_log "\"//foo:a1\" -> \"//foo:a.sh\"$"
+  expect_log "\"//foo:a2\" -> \"//foo:a.sh\"$"
+  expect_log "\"//foo:a.sh\"$"
+  expect_log "\"//foo:a1\" -> \"//foo:b\"$"
+  expect_log "\"//foo:a2\" -> \"//foo:b\"$"
+  expect_log "\"//foo:b\"$"
+  expect_log "\"//foo:b\" -> \"//foo:b.sh\"$"
+
+  expect_log "\"//foo:a1\" -> \"//foo:c1\"$"
+  expect_log "\"//foo:a1\" -> \"//foo:c2\"$"
+  expect_log "\"//foo:a2\" -> \"//foo:c1\"$"
+  expect_log "\"//foo:a2\" -> \"//foo:c2\"$"
+  expect_log "\"//foo:c1\"$"
+  expect_log "\"//foo:c2\"$"
+  expect_log "\"//foo:c1\" -> \"//foo:c.sh\"$"
+  expect_log "\"//foo:c2\" -> \"//foo:c.sh\"$"
+  expect_log "\"//foo:c.sh\"$"
+}
+
+function test_proto_non_ascii_attributes() {
+  rm -rf foo
+  mkdir -p foo
+  cat > foo/defs.bzl <<'EOF'
+def _impl(ctx): pass
+r = rule(
+  implementation = _impl,
+  attrs = {
+    "label": attr.label(),
+    "label_keyed_string_dict": attr.label_keyed_string_dict(),
+    "label_list": attr.label_list(),
+    "output": attr.output(),
+    "output_list": attr.output_list(),
+    "string": attr.string(),
+    "string_dict": attr.string_dict(),
+    "string_keyed_label_dict": attr.string_keyed_label_dict(),
+    "string_list": attr.string_list(),
+    "string_list_dict": attr.string_list_dict(),
+  },
+)
+
+def test_case(name, with_select):
+  def maybe_select(x):
+    if with_select:
+      return select({"//conditions:default": x})
+    return x
+
+  r(
+    name = name,
+    label = maybe_select("leaf🌱"),
+    label_keyed_string_dict = maybe_select({"fire🔥": "ice❄️"}),
+    label_list = maybe_select(["star⭐"]),
+    output = name + "flower🌸",
+    output_list = [name + "party🎉"],
+    string = maybe_select("ball⚽"),
+    string_dict = maybe_select({"sun☀️": "moon🌙"}),
+    string_keyed_label_dict = maybe_select({"heart❤️": "skull💀"}),
+    string_list = maybe_select(["rocket🚀"]),
+    string_list_dict = maybe_select({"dog🐶": ["cat🐱"]}),
+  )
+EOF
+  cat > foo/BUILD <<'EOF'
+load(":defs.bzl", "test_case")
+test_case(name = "without_select", with_select = False)
+test_case(name = "with_select", with_select = True)
+EOF
+
+  declare -a items=("leaf🌱" "fire🔥" "ice❄️" "star⭐" "flower🌸" "party🎉"
+    "ball⚽" "sun☀️" "moon🌙" "heart❤️" "skull💀" "rocket🚀" "dog🐶" "cat🐱")
+
+  bazel query --output=proto //foo:without_select >& $TEST_log \
+      || fail "Expected success"
+
+  for x in "${items[@]}"; do
+    grep -q "$x" $TEST_log || fail "Expected $x in query output for //foo:without_select"
+  done
+
+  bazel query --output=proto //foo:with_select >& $TEST_log \
+      || fail "Expected success"
+
+  for x in "${items[@]}"; do
+    grep -q "$x" $TEST_log || fail "Expected $x in query output for //foo:with_select"
+  done
 }
 
 run_suite "${PRODUCT_NAME} query tests"

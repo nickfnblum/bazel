@@ -14,11 +14,13 @@
 
 package com.google.devtools.build.lib.vfs;
 
+import static com.google.common.base.Throwables.throwIfInstanceOf;
+import static com.google.common.base.Throwables.throwIfUnchecked;
+
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Splitter;
-import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
@@ -163,6 +165,11 @@ public final class UnixGlob {
       }
     }
     return null;
+  }
+
+  /** Returns whether {@code pattern} matches {@code path}. */
+  public static boolean matches(String[] pattern, String[] path) {
+    return matchesPattern(pattern, path, 0, 0, null, MatchMode.EXACT);
   }
 
   /** Calls {@link #matches(String, String, Map) matches(pattern, str, null)} */
@@ -478,7 +485,8 @@ public final class UnixGlob {
         return globAsync(base, patterns, pathDiscriminator, syscalls).get();
       } catch (ExecutionException e) {
         Throwable cause = e.getCause();
-        Throwables.propagateIfPossible(cause, IOException.class);
+        throwIfInstanceOf(cause, IOException.class);
+        throwIfUnchecked(cause);
         throw new RuntimeException(e);
       }
     }
@@ -494,8 +502,9 @@ public final class UnixGlob {
             globAsync(base, patterns, pathDiscriminator, syscalls));
       } catch (ExecutionException e) {
         Throwable cause = e.getCause();
-        Throwables.propagateIfPossible(cause, IOException.class);
-        Throwables.propagateIfPossible(cause, BadPattern.class);
+        throwIfInstanceOf(cause, IOException.class);
+        throwIfInstanceOf(cause, BadPattern.class);
+        throwIfUnchecked(cause);
         throw new RuntimeException(e);
       }
     }
@@ -690,10 +699,9 @@ public final class UnixGlob {
 
         @Override
         public boolean equals(Object obj) {
-          if (!(obj instanceof GlobTask)) {
+          if (!(obj instanceof GlobTask other)) {
             return false;
           }
-          GlobTask other = (GlobTask) obj;
           return base.equals(other.base) && patternIdx == other.patternIdx;
         }
 
@@ -890,14 +898,15 @@ public final class UnixGlob {
     if (complexPatterns.isEmpty()) {
       return;
     }
-    // TODO(adonovan): validate pattern unconditionally (potentially breaking change).
+    // TODO: b/361409364 - Fully validate exclude patterns. This is a breaking change, so there
+    // needs to first be a depot cleanup.
     List<String[]> splitPatterns = checkAndSplitPatterns(complexPatterns);
     HashMap<String, Pattern> patternCache = new HashMap<>();
     paths.removeIf(
         path -> {
           String[] segments = Iterables.toArray(Splitter.on('/').split(path), String.class);
           for (String[] splitPattern : splitPatterns) {
-            if (matchesPattern(splitPattern, segments, 0, 0, patternCache)) {
+            if (matchesPattern(splitPattern, segments, 0, 0, patternCache, MatchMode.EXACT)) {
               return true;
             }
           }
@@ -905,21 +914,43 @@ public final class UnixGlob {
         });
   }
 
+  /** Returns whether any path under {@code path} can match {@code pattern}. */
+  public static boolean canMatchChild(String[] pattern, String[] path) {
+    return matchesPattern(pattern, path, 0, 0, null, MatchMode.CAN_MATCH_CHILD);
+  }
+
+  /** Returns whether {@code pattern} matches a prefix of {@code path}. */
+  public static boolean matchesPrefix(String[] pattern, String[] path) {
+    return matchesPattern(pattern, path, 0, 0, null, MatchMode.PREFIX);
+  }
+
+  /** How {@code #matchesPattern()} should work */
+  private enum MatchMode {
+    EXACT, // The path should exactly match the pattern
+    PREFIX, // The pattern should match a prefix of the path
+    CAN_MATCH_CHILD, // Whether there can be any path under the prefix that matches the pattern
+  }
+
   /** Returns true if {@code pattern} matches {@code path} starting from the given segments. */
   private static boolean matchesPattern(
-      String[] pattern, String[] path, int i, int j, Map<String, Pattern> patternCache) {
+      String[] pattern,
+      String[] path,
+      int i,
+      int j,
+      Map<String, Pattern> patternCache,
+      MatchMode matchMode) {
     if (i == pattern.length) {
-      return j == path.length;
+      return matchMode == MatchMode.PREFIX || j == path.length;
     }
     if (pattern[i].equals("**")) {
-      return matchesPattern(pattern, path, i + 1, j, patternCache)
-          || (j < path.length && matchesPattern(pattern, path, i, j + 1, patternCache));
+      return matchesPattern(pattern, path, i + 1, j, patternCache, matchMode)
+          || (j < path.length && matchesPattern(pattern, path, i, j + 1, patternCache, matchMode));
     }
     if (j == path.length) {
-      return false;
+      return matchMode == MatchMode.CAN_MATCH_CHILD;
     }
     if (matches(pattern[i], path[j], patternCache)) {
-      return matchesPattern(pattern, path, i + 1, j + 1, patternCache);
+      return matchesPattern(pattern, path, i + 1, j + 1, patternCache, matchMode);
     }
     return false;
   }

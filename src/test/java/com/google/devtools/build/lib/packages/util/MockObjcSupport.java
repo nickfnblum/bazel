@@ -35,6 +35,7 @@ public final class MockObjcSupport {
           "ios_i386",
           "ios_armv7",
           "ios_arm64",
+          "ios_arm64e",
           "darwin_x86_64",
           "watchos_i386",
           "watchos_x86_64",
@@ -66,12 +67,17 @@ public final class MockObjcSupport {
       TestConstants.APPLE_PLATFORM_PACKAGE_ROOT + ":darwin_x86_64";
   public static final String IOS_X86_64 = APPLE_SIMULATOR_PLATFORM_PACKAGE + ":ios_x86_64";
   public static final String IOS_ARM64 = TestConstants.APPLE_PLATFORM_PACKAGE_ROOT + ":ios_arm64";
+
+  public static final String IOS_ARM64E = TestConstants.APPLE_PLATFORM_PACKAGE_ROOT + ":ios_arm64e";
   public static final String IOS_ARMV7 =
       TestConstants.APPLE_PLATFORM_PACKAGE_ROOT + ":ios_armv7"; // legacy for testing
   public static final String IOS_I386 =
       APPLE_SIMULATOR_PLATFORM_PACKAGE + ":ios_i386"; // legacy for testing
   public static final String WATCHOS_ARMV7K =
       TestConstants.APPLE_PLATFORM_PACKAGE_ROOT + ":watchos_armv7k";
+
+  public static final String WATCHOS_ARM64_32 =
+      TestConstants.APPLE_PLATFORM_PACKAGE_ROOT + ":watchos_arm64_32";
 
   public static ImmutableList<String> requiredObjcPlatformFlags(String... args) {
     ImmutableList.Builder<String> builder = ImmutableList.builder();
@@ -181,6 +187,13 @@ public final class MockObjcSupport {
         "    '" + TestConstants.CONSTRAINTS_PACKAGE_ROOT + "cpu:arm64',",
         "  ],",
         ")",
+        "platform(",
+        "  name = 'ios_arm64e',",
+        "  constraint_values = [",
+        "    '" + TestConstants.CONSTRAINTS_PACKAGE_ROOT + "os:ios',",
+        "    '" + TestConstants.CONSTRAINTS_PACKAGE_ROOT + "cpu:arm64e',",
+        "  ],",
+        ")",
         "platform(", // legacy platform only used to support tests
         "  name = 'ios_armv7',",
         "  constraint_values = [",
@@ -193,6 +206,13 @@ public final class MockObjcSupport {
         "  constraint_values = [",
         "    '" + TestConstants.CONSTRAINTS_PACKAGE_ROOT + "os:watchos',",
         "    '" + TestConstants.CONSTRAINTS_PACKAGE_ROOT + "cpu:armv7k',",
+        "  ],",
+        ")",
+        "platform(",
+        "  name = 'watchos_arm64_32',",
+        "  constraint_values = [",
+        "    '" + TestConstants.CONSTRAINTS_PACKAGE_ROOT + "os:watchos',",
+        "    '" + TestConstants.CONSTRAINTS_PACKAGE_ROOT + "cpu:arm64_32',",
         "  ],",
         ")");
 
@@ -226,7 +246,7 @@ public final class MockObjcSupport {
       config.create(TestConstants.APPLE_PLATFORM_PATH + "/simulator/BUILD", simulatorPlatforms);
     }
 
-    for (String tool : ImmutableSet.of("objc_dummy.mm", "gcov", "testrunner", "mcov", "libtool")) {
+    for (String tool : ImmutableSet.of("gcov", "testrunner", "mcov", "libtool")) {
       config.create(TestConstants.TOOLS_REPOSITORY_SCRATCH + "tools/objc/" + tool);
     }
     config.create(
@@ -236,10 +256,6 @@ public final class MockObjcSupport {
         "exports_files(glob(['**']))",
         "filegroup(name = 'default_provisioning_profile', srcs = ['foo.mobileprovision'])",
         "filegroup(name = 'xctest_infoplist', srcs = ['xctest.plist'])",
-        "py_binary(",
-        "  name = 'j2objc_dead_code_pruner_binary',",
-        "  srcs = ['j2objc_dead_code_pruner_binary.py']",
-        ")",
         "xcode_config(name = 'host_xcodes',",
         "  default = ':version7_3_1',",
         "  versions = [':version7_3_1', ':version5_0', ':version7_3', ':version5_8', ':version5'])",
@@ -270,10 +286,21 @@ public final class MockObjcSupport {
     if (TestConstants.TOOLS_REPOSITORY_SCRATCH.length() > 0) {
       config.create(
           "tools/objc/BUILD",
-          "package(default_visibility=['//visibility:public'])",
-          "exports_files(glob(['**']))",
-          "filegroup(name = 'default_provisioning_profile', srcs = ['foo.mobileprovision'])",
-          "filegroup(name = 'xctest_infoplist', srcs = ['xctest.plist'])");
+          """
+          package(default_visibility = ["//visibility:public"])
+
+          exports_files(glob(["**"]))
+
+          filegroup(
+              name = "default_provisioning_profile",
+              srcs = ["foo.mobileprovision"],
+          )
+
+          filegroup(
+              name = "xctest_infoplist",
+              srcs = ["xctest.plist"],
+          )
+          """);
     }
     config.create(
         TestConstants.TOOLS_REPOSITORY_SCRATCH + "tools/objc/foo.mobileprovision", "No such luck");
@@ -326,6 +353,7 @@ public final class MockObjcSupport {
         darwinX86_64().build(),
         x64_windows().build(),
         ios_arm64().build(),
+        ios_arm64e().build(),
         ios_armv7().build(),
         ios_i386().build(),
         iosX86_64().build(),
@@ -422,6 +450,41 @@ public final class MockObjcSupport {
             "/usr/include")
         .withToolchainTargetConstraints(
             TestConstants.CONSTRAINTS_PACKAGE_ROOT + "cpu:arm64",
+            TestConstants.CONSTRAINTS_PACKAGE_ROOT + "os:ios");
+  }
+
+  public static CcToolchainConfig.Builder ios_arm64e() {
+    return CcToolchainConfig.builder()
+        .withCpu("ios_arm64e")
+        .withCompiler("compiler")
+        .withToolchainIdentifier("ios_arm64e")
+        .withHostSystemName("x86_64e-apple-macosx")
+        .withTargetSystemName("arm64e-apple-ios")
+        .withTargetLibc("ios")
+        .withAbiVersion("local")
+        .withAbiLibcVersion("local")
+        .withCcTargetOs("apple")
+        .withSysroot("")
+        .withCxxBuiltinIncludeDirectories(
+            "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/",
+            "/Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/",
+            "/Applications/Xcode_7.2.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/",
+            "/Applications/Xcode_7.3.1.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/",
+            "/Applications/Xcode_8.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/",
+            "/Applications/Xcode_8.1.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/",
+            "/Applications/Xcode_8.2.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/",
+            "/Applications/Xcode_8.2.1.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/",
+            "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs",
+            "/Applications/Xcode-beta.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs",
+            "/Applications/Xcode_7.2.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs",
+            "/Applications/Xcode_7.3.1.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs",
+            "/Applications/Xcode_8.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs",
+            "/Applications/Xcode_8.1.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs",
+            "/Applications/Xcode_8.2.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs",
+            "/Applications/Xcode_8.2.1.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs",
+            "/usr/include")
+        .withToolchainTargetConstraints(
+            TestConstants.CONSTRAINTS_PACKAGE_ROOT + "cpu:arm64e",
             TestConstants.CONSTRAINTS_PACKAGE_ROOT + "os:ios");
   }
 

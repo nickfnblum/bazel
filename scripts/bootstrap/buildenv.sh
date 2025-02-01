@@ -77,7 +77,7 @@ function fail() {
 DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 WORKSPACE_DIR="$(dirname "$(dirname "${DIR}")")"
 
-JAVA_VERSION=${JAVA_VERSION:-11}
+JAVA_VERSION=${JAVA_VERSION:-21}
 BAZELRC=${BAZELRC:-"/dev/null"}
 PLATFORM="$(uname -s | tr 'A-Z' 'a-z')"
 
@@ -265,9 +265,8 @@ function git_date() {
 # Get the latest release version and append the date of
 # the last commit if any.
 function get_last_version() {
-  if [ -f "CHANGELOG.md" ]; then
-    local version="$(fgrep -m 1 '## Release' CHANGELOG.md \
-                       | sed -E 's|.*Release (.*) \(.*\)|\1|')"
+  if [ -f "MODULE.bazel" ]; then
+    local version=$(grep "version =" MODULE.bazel | head -n 1 | sed 's/.*version = "\(.*\)".*/\1/' | cut -d '"' -f2)
   else
     local version=""
   fi

@@ -101,6 +101,10 @@ public final class PrecomputedValue implements SkyValue {
   public static final Precomputed<BuildOptions> BASELINE_CONFIGURATION =
       new Precomputed<>("baseline_configuration", /*shareable=*/ false);
 
+  // Unsharable because of complications in deserializing BuildOptions on startup due to caching.
+  public static final Precomputed<BuildOptions> BASELINE_EXEC_CONFIGURATION =
+      new Precomputed<>("baseline_exec_configuration", /* shareable= */ false);
+
   private final Object value;
 
   @VisibleForTesting
@@ -122,10 +126,9 @@ public final class PrecomputedValue implements SkyValue {
 
   @Override
   public boolean equals(Object obj) {
-    if (!(obj instanceof PrecomputedValue)) {
+    if (!(obj instanceof PrecomputedValue other)) {
       return false;
     }
-    PrecomputedValue other = (PrecomputedValue) obj;
     return value.equals(other.value);
   }
 

@@ -113,11 +113,6 @@ public class BazelRuleClassProviderTest extends BuildViewTestCase {
   }
 
   @Test
-  public void shConsistency() {
-    checkModule(ShRules.INSTANCE);
-  }
-
-  @Test
   public void protoConsistency() {
     checkModule(BazelRuleClassProvider.PROTO_RULES);
   }
@@ -201,11 +196,12 @@ public class BazelRuleClassProviderTest extends BuildViewTestCase {
   @Test
   public void optionsAlsoApplyToHost() throws Exception {
     BuildOptions options = targetConfig.getOptions().clone();
-    if (!options.contains(StrictActionEnvOptions.class)) {
+    var strictActionEnvOptions = options.get(StrictActionEnvOptions.class);
+    if (strictActionEnvOptions == null) {
       // This Bazel build doesn't include StrictActionEnvOptions. Nothing to test.
       return;
     }
-    options.get(StrictActionEnvOptions.class).useStrictActionEnv = true;
+    strictActionEnvOptions.useStrictActionEnv = true;
 
     StrictActionEnvOptions h =
         AnalysisTestUtil.execOptions(options, skyframeExecutor, reporter)
@@ -223,7 +219,7 @@ public class BazelRuleClassProviderTest extends BuildViewTestCase {
     assertThat(determineShellExecutable(OS.OPENBSD, null))
         .isEqualTo(PathFragment.create("/usr/local/bin/bash"));
     assertThat(determineShellExecutable(OS.WINDOWS, null))
-        .isEqualTo(PathFragment.create("c:/tools/msys64/usr/bin/bash.exe"));
+        .isEqualTo(PathFragment.create("c:/msys64/usr/bin/bash.exe"));
   }
 
   @Test

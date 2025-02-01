@@ -14,7 +14,6 @@
 
 package com.google.devtools.build.lib.metrics;
 
-import com.google.auto.value.AutoValue;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableList;
@@ -25,7 +24,6 @@ import com.google.devtools.build.lib.bugreport.BugReporter;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.ProfilerTask;
 import com.google.devtools.build.lib.runtime.BlazeModule;
-import com.google.devtools.build.lib.runtime.Command;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
 import com.google.devtools.build.lib.runtime.InfoItem;
 import com.google.devtools.build.lib.runtime.ServerBuilder;
@@ -79,17 +77,10 @@ public final class PostGCMemoryUseRecorder implements NotificationListener {
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
 
   /** The memory use and time of a build's peak post-GC heap. */
-  @AutoValue
-  public abstract static class PeakHeap {
-
-    PeakHeap() {}
-
-    public abstract long bytes();
-
-    public abstract long timestampMillis();
+  public record PeakHeap(long bytes, long timestampMillis) {
 
     static PeakHeap create(long bytes, long timestampMillis) {
-      return new AutoValue_PostGCMemoryUseRecorder_PeakHeap(bytes, timestampMillis);
+      return new PeakHeap(bytes, timestampMillis);
     }
   }
 
@@ -288,7 +279,7 @@ public final class PostGCMemoryUseRecorder implements NotificationListener {
     }
 
     @Override
-    public ImmutableList<Class<? extends OptionsBase>> getCommandOptions(Command command) {
+    public ImmutableList<Class<? extends OptionsBase>> getCommonCommandOptions() {
       return ImmutableList.of(Options.class);
     }
 

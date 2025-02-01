@@ -15,7 +15,10 @@
 
 package com.google.devtools.build.lib.bazel.bzlmod;
 
-import com.google.auto.value.AutoValue;
+import static java.util.Objects.requireNonNull;
+
+import com.google.common.collect.ImmutableList;
+import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.skyframe.SkyFunctions;
 import com.google.devtools.build.lib.skyframe.serialization.VisibleForSerialization;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
@@ -28,16 +31,18 @@ import com.google.devtools.build.skyframe.SkyValue;
  * Empty result of running Bazel fetch all dependencies, to indicate that all repos have been
  * fetched successfully.
  */
-@AutoValue
-public abstract class BazelFetchAllValue implements SkyValue {
+public record BazelFetchAllValue(ImmutableList<RepositoryName> reposToVendor) implements SkyValue {
+  public BazelFetchAllValue {
+    requireNonNull(reposToVendor, "reposToVendor");
+  }
 
   /** Creates a key from the given repository name. */
   public static BazelFetchAllValue.Key key(Boolean configureEnabled) {
     return BazelFetchAllValue.Key.create(configureEnabled);
   }
 
-  public static BazelFetchAllValue create() {
-    return new AutoValue_BazelFetchAllValue();
+  public static BazelFetchAllValue create(ImmutableList<RepositoryName> reposToVendor) {
+    return new BazelFetchAllValue(reposToVendor);
   }
 
   /** Key type for BazelFetchAllValue. */

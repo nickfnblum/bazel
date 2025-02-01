@@ -13,14 +13,14 @@
 // limitations under the License.
 package com.google.devtools.build.lib.rules.cpp;
 
+import static com.google.devtools.build.lib.skyframe.BzlLoadValue.keyForBuiltins;
+
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.OutputGroupInfo;
 import com.google.devtools.build.lib.analysis.PackageSpecificationProvider;
-import com.google.devtools.build.lib.analysis.RuleErrorConsumer;
-import com.google.devtools.build.lib.analysis.config.BuildOptions;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.Depset;
 import com.google.devtools.build.lib.collect.nestedset.Depset.TypeException;
@@ -34,8 +34,7 @@ import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.
 import com.google.devtools.build.lib.packages.StarlarkInfo;
 import com.google.devtools.build.lib.packages.StarlarkInfoWithSchema;
 import com.google.devtools.build.lib.packages.StarlarkProviderWrapper;
-import com.google.devtools.build.lib.rules.apple.AppleCommandLineOptions;
-import com.google.devtools.build.lib.rules.apple.AppleConfiguration;
+import com.google.devtools.build.lib.packages.StructImpl;
 import com.google.devtools.build.lib.rules.cpp.CcToolchainFeatures.FeatureConfiguration;
 import com.google.devtools.build.lib.rules.cpp.CppConfiguration.Tool;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -44,8 +43,6 @@ import net.starlark.java.eval.Dict;
 import net.starlark.java.eval.EvalException;
 import net.starlark.java.eval.Sequence;
 import net.starlark.java.eval.Starlark;
-import net.starlark.java.eval.StarlarkFunction;
-import net.starlark.java.eval.StarlarkThread;
 import net.starlark.java.syntax.Location;
 
 /** Information about a C++ compiler used by the <code>cc_*</code> rules. */
@@ -60,7 +57,8 @@ public final class CcToolchainProvider {
       implements Provider {
     public CcToolchainInfoProvider() {
       super(
-          Label.parseCanonicalUnchecked("@_builtins//:common/cc/cc_toolchain_info.bzl"),
+          keyForBuiltins(
+              Label.parseCanonicalUnchecked("@_builtins//:common/cc/cc_toolchain_info.bzl")),
           STARLARK_NAME);
     }
 
@@ -119,14 +117,6 @@ public final class CcToolchainProvider {
     return PathFragment.create(value.getValue(key, String.class));
   }
 
-  private static final <T> T nullIfNone(StarlarkInfo value, String key, Class<T> type)
-      throws EvalException {
-    if (value.getValue(key) == null || value.getValue(key) == Starlark.NONE) {
-      return null;
-    }
-    return value.getValue(key, type);
-  }
-
   private static final ImmutableList<PathFragment> convertStarlarkListToPathFragments(
       StarlarkInfo value, String key) throws EvalException {
     ImmutableList.Builder<PathFragment> pathFragments = ImmutableList.builder();
@@ -152,6 +142,7 @@ public final class CcToolchainProvider {
     return new CcToolchainProvider(value);
   }
 
+  // LINT.IfChange
   /**
    * Determines if we should apply -fPIC for this rule's C++ compilations. This determination is
    * generally made by the global C++ configuration settings "needsPic" and "usePicForBinaries".
@@ -166,6 +157,8 @@ public final class CcToolchainProvider {
     return cppConfiguration.forcePic()
         || featureConfiguration.isEnabled(CppRuleClasses.SUPPORTS_PIC);
   }
+
+  // LINT.ThenChange(//src/main/starlark/builtins_bzl/common/cc/cc_helper_internal.bzl)
 
   /**
    * Returns true if PER_OBJECT_DEBUG_INFO are specified and supported by the CROSSTOOL for the
@@ -204,15 +197,13 @@ public final class CcToolchainProvider {
       ImmutableMap<String, String> toolPaths,
       CppConfiguration.Tool tool,
       Label ccToolchainLabel,
-      String toolchainIdentifier,
-      RuleErrorConsumer ruleErrorConsumer)
-      throws RuleErrorException {
+      String toolchainIdentifier)
+      throws EvalException {
     String toolPath = getToolPathStringOrNull(toolPaths, tool);
     if (toolPath == null) {
-      throw ruleErrorConsumer.throwWithRuleError(
-          String.format(
-              "cc_toolchain '%s' with identifier '%s' doesn't define a tool path for '%s'",
-              ccToolchainLabel, toolchainIdentifier, tool.getNamePart()));
+      throw Starlark.errorf(
+          "cc_toolchain '%s' with identifier '%s' doesn't define a tool path for '%s'",
+          ccToolchainLabel, toolchainIdentifier, tool.getNamePart());
     }
     return toolPath;
   }
@@ -241,29 +232,29 @@ public final class CcToolchainProvider {
   }
 
   /** Returns all the files in Crosstool. */
-  public NestedSet<Artifact> getAllFiles() throws RuleErrorException {
+  public NestedSet<Artifact> getAllFiles() throws EvalException {
     try {
       return value.getValue("all_files", Depset.class).getSet(Artifact.class);
-    } catch (TypeException | EvalException e) {
-      throw new RuleErrorException(e);
+    } catch (TypeException e) {
+      throw new EvalException(e);
     }
   }
 
   /** Returns all the files in Crosstool + libc. */
-  public NestedSet<Artifact> getAllFilesIncludingLibc() throws RuleErrorException {
+  public NestedSet<Artifact> getAllFilesIncludingLibc() throws EvalException {
     try {
       return value.getValue("_all_files_including_libc", Depset.class).getSet(Artifact.class);
-    } catch (TypeException | EvalException e) {
-      throw new RuleErrorException(e);
+    } catch (TypeException e) {
+      throw new EvalException(e);
     }
   }
 
   /** Returns the files necessary for compilation. */
-  public NestedSet<Artifact> getCompilerFiles() throws RuleErrorException {
+  public NestedSet<Artifact> getCompilerFiles() throws EvalException {
     try {
       return value.getValue("_compiler_files", Depset.class).getSet(Artifact.class);
-    } catch (TypeException | EvalException e) {
-      throw new RuleErrorException(e);
+    } catch (TypeException e) {
+      throw new EvalException(e);
     }
   }
 
@@ -271,35 +262,25 @@ public final class CcToolchainProvider {
    * Returns the files necessary for compilation excluding headers, assuming that included files
    * will be discovered by input discovery.
    */
-  public NestedSet<Artifact> getCompilerFilesWithoutIncludes() throws RuleErrorException {
+  public NestedSet<Artifact> getCompilerFilesWithoutIncludes() throws EvalException {
     try {
       return value
           .getValue("_compiler_files_without_includes", Depset.class)
           .getSet(Artifact.class);
-    } catch (TypeException | EvalException e) {
-      throw new RuleErrorException(e);
+    } catch (TypeException e) {
+      throw new EvalException(e);
     }
-  }
-
-  /** Returns the files necessary for a 'strip' invocation. */
-  public NestedSet<Artifact> getStripFiles() throws EvalException, TypeException {
-    return value.getValue("_strip_files", Depset.class).getSet(Artifact.class);
-  }
-
-  /** Returns the files necessary for an 'objcopy' invocation. */
-  public NestedSet<Artifact> getObjcopyFiles() throws EvalException, TypeException {
-    return value.getValue("_objcopy_files", Depset.class).getSet(Artifact.class);
   }
 
   /**
    * Returns the files necessary for an 'as' invocation. May be empty if the CROSSTOOL file does not
    * define as_files.
    */
-  public NestedSet<Artifact> getAsFiles() throws RuleErrorException {
+  public NestedSet<Artifact> getAsFiles() throws EvalException {
     try {
       return value.getValue("_as_files", Depset.class).getSet(Artifact.class);
-    } catch (TypeException | EvalException e) {
-      throw new RuleErrorException(e);
+    } catch (TypeException e) {
+      throw new EvalException(e);
     }
   }
 
@@ -425,27 +406,8 @@ public final class CcToolchainProvider {
     return cppConfiguration.getCSFdoInstrument();
   }
 
-  public static CcToolchainVariables getBuildVars(
-      CcToolchainProvider ccToolchainProvider,
-      StarlarkThread thread,
-      CppConfiguration cppConfiguration,
-      BuildOptions buildOptions,
-      String cpu,
-      StarlarkFunction buildVarsFunc)
-      throws EvalException, InterruptedException {
-    Object ccToolchainVariables =
-        Starlark.call(
-            thread,
-            buildVarsFunc,
-            ImmutableList.of(
-                /* cc_toolchain */ ccToolchainProvider.getValue(),
-                /* cpp_config */ cppConfiguration,
-                /* apple_config */ buildOptions.contains(AppleCommandLineOptions.class)
-                    ? new AppleConfiguration(buildOptions)
-                    : Starlark.NONE,
-                /* cpu */ cpu),
-            ImmutableMap.of());
-    return (CcToolchainVariables) ccToolchainVariables;
+  public CcToolchainVariables getBuildVars() throws EvalException {
+    return getValue().getValue("_build_variables", CcToolchainVariables.class);
   }
 
   /**
@@ -471,7 +433,7 @@ public final class CcToolchainProvider {
   /** Returns the grep-includes tool which is needing during linking because of linkstamping. */
   @Nullable
   public Artifact getGrepIncludes() throws EvalException {
-    return nullIfNone(value, "_grep_includes", Artifact.class);
+    return value.getNoneableValue("_grep_includes", Artifact.class);
   }
 
   /** Returns the tool that builds interface libraries from dynamic libraries. */
@@ -518,17 +480,7 @@ public final class CcToolchainProvider {
   }
 
   public FdoContext getFdoContext() throws EvalException {
-    return value.getValue("_fdo_context", FdoContext.class);
-  }
-
-  /**
-   * Unused, for compatibility with things internal to Google.
-   *
-   * @deprecated use platforms
-   */
-  @Deprecated
-  public String getTargetOS() throws EvalException {
-    return value.getValue("_target_os", String.class);
+    return new FdoContext(value.getValue("_fdo_context", StructImpl.class));
   }
 
   // Not all of CcToolchainProvider is exposed to Starlark, which makes implementing deep equality
@@ -556,7 +508,7 @@ public final class CcToolchainProvider {
     return value.getValue("_build_info_files", OutputGroupInfo.class);
   }
 
-  public StarlarkFunction getBuildVarsFunc() throws EvalException {
-    return value.getValue("_build_vars_func", StarlarkFunction.class);
+  public CppConfiguration getCppConfiguration() throws EvalException {
+    return value.getValue("_cpp_configuration", CppConfiguration.class);
   }
 }

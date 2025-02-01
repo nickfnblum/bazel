@@ -33,6 +33,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import javax.annotation.Nullable;
 import net.starlark.java.syntax.Location;
 
 /**
@@ -102,11 +103,6 @@ public class EnvironmentGroup implements Target {
     this.environmentLabels = new EnvironmentLabels(label, environments, defaults);
     this.location = location;
     this.containingPackage = pkg;
-  }
-
-  @Override
-  public boolean isImmutable() {
-    return true; // immutable and Starlark-hashable
   }
 
   public EnvironmentLabels getEnvironmentLabels() {
@@ -266,11 +262,6 @@ public class EnvironmentGroup implements Target {
   }
 
   @Override
-  public String getName() {
-    return environmentLabels.label.getName();
-  }
-
-  @Override
   public Package getPackage() {
     return containingPackage;
   }
@@ -306,8 +297,17 @@ public class EnvironmentGroup implements Target {
   }
 
   @Override
+  @Nullable
+  public RuleVisibility getRawVisibility() {
+    return null;
+  }
+
+  @Override
   public RuleVisibility getVisibility() {
-    return RuleVisibility.PRIVATE; // No rule should be referencing an environment_group.
+    // No rule should be referencing an environment_group.
+    // (We override getRawVisibility() separately so as to not display this value during
+    // introspection.)
+    return RuleVisibility.PRIVATE;
   }
 
   @Override

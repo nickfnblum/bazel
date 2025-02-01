@@ -38,7 +38,7 @@ public final class TemplateExpander {
    */
   @Nullable
   public static String expandSingleVariable(String expression, TemplateContext context)
-      throws ExpansionException, InterruptedException {
+      throws ExpansionException {
     String var = new TemplateExpander(expression).getSingleVariable();
     return (var != null) ? context.lookupVariable(var) : null;
   }
@@ -53,7 +53,7 @@ public final class TemplateExpander {
    * @throws ExpansionException if "expr" contained undefined or ill-formed variables references
    */
   public static Expansion expand(String expression, TemplateContext context)
-      throws ExpansionException, InterruptedException {
+      throws ExpansionException {
     if (expression.indexOf('$') < 0) {
       return Expansion.create(expression, ImmutableSet.of());
     }
@@ -62,7 +62,7 @@ public final class TemplateExpander {
 
   // Helper method for counting recursion depth.
   private static Expansion expand(String expression, TemplateContext context, int depth)
-      throws ExpansionException, InterruptedException {
+      throws ExpansionException {
     if (depth > 10) { // plenty!
       throw new ExpansionException(
           String.format("potentially unbounded recursion during expansion of '%s'", expression));
@@ -70,8 +70,7 @@ public final class TemplateExpander {
     return new TemplateExpander(expression).expand(context, depth);
   }
 
-  private Expansion expand(TemplateContext context, int depth)
-      throws ExpansionException, InterruptedException {
+  private Expansion expand(TemplateContext context, int depth) throws ExpansionException {
     StringBuilder result = new StringBuilder();
     ImmutableSet.Builder<String> lookedUpVariables = ImmutableSet.builder();
     while (offset < length) {
@@ -126,7 +125,8 @@ public final class TemplateExpander {
   private String scanVariable() throws ExpansionException {
     char c = buffer[offset];
     switch (c) {
-      case '(': { // looks like $(SRCS)
+      case '(' -> {
+        // looks like $(SRCS)
         offset++;
         int start = offset;
         while (offset < length && buffer[offset] != ')') {
@@ -136,9 +136,10 @@ public final class TemplateExpander {
           throw new ExpansionException("unterminated variable reference");
         }
         return new String(buffer, start, offset - start);
+        // We only parse ${variable} syntax to provide a better error message.
       }
-      // We only parse ${variable} syntax to provide a better error message.
-      case '{': { // looks like ${SRCS}
+      case '{' -> {
+        // looks like ${SRCS}
         offset++;
         int start = offset;
         while (offset < length && buffer[offset] != '}') {
@@ -148,23 +149,30 @@ public final class TemplateExpander {
           throw new ExpansionException("unterminated variable reference");
         }
         String expr = new String(buffer, start, offset - start);
-        throw new ExpansionException("'${" + expr + "}' syntax is not supported; use '$(" + expr
-                                     + ")' instead for \"Make\" variables, or escape the '$' as "
-                                     + "'$$' if you intended this for the shell");
+        throw new ExpansionException(
+            "'${"
+                + expr
+                + "}' syntax is not supported; use '$("
+                + expr
+                + ")' instead for \"Make\" variables, or escape the '$' as "
+                + "'$$' if you intended this for the shell");
       }
-      case '@':
-      case '<':
-      case '^':
+      case '@', '<', '^' -> {
         return String.valueOf(c);
-      default: {
+      }
+      default -> {
         int start = offset;
         while (offset + 1 < length && Character.isJavaIdentifierPart(buffer[offset + 1])) {
           offset++;
         }
         String expr = new String(buffer, start, offset + 1 - start);
-        throw new ExpansionException("'$" + expr + "' syntax is not supported; use '$(" + expr
-                                     + ")' instead for \"Make\" variables, or escape the '$' as "
-                                     + "'$$' if you intended this for the shell");
+        throw new ExpansionException(
+            "'$"
+                + expr
+                + "' syntax is not supported; use '$("
+                + expr
+                + ")' instead for \"Make\" variables, or escape the '$' as "
+                + "'$$' if you intended this for the shell");
       }
     }
   }

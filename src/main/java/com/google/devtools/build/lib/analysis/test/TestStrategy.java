@@ -29,6 +29,9 @@ import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.actions.UserExecException;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.analysis.config.PerLabelOptions;
+import com.google.devtools.build.lib.analysis.config.RunUnder;
+import com.google.devtools.build.lib.analysis.config.RunUnder.CommandRunUnder;
+import com.google.devtools.build.lib.analysis.config.RunUnder.LabelRunUnder;
 import com.google.devtools.build.lib.analysis.test.TestRunnerAction.ResolvedPaths;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.events.Event;
@@ -39,11 +42,13 @@ import com.google.devtools.build.lib.exec.StreamedTestOutput;
 import com.google.devtools.build.lib.exec.TestLogHelper;
 import com.google.devtools.build.lib.exec.TestXmlOutputParser;
 import com.google.devtools.build.lib.exec.TestXmlOutputParserException;
+import com.google.devtools.build.lib.runtime.TestSummaryOptions;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.TestAction;
 import com.google.devtools.build.lib.server.FailureDetails.TestAction.Code;
 import com.google.devtools.build.lib.shell.TerminationStatus;
 import com.google.devtools.build.lib.util.Fingerprint;
+import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.util.io.OutErr;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -153,10 +158,13 @@ public abstract class TestStrategy implements TestActionContext {
   // executable base name.
   private final Map<String, Integer> tmpIndex = new HashMap<>();
   protected final ExecutionOptions executionOptions;
+  protected final TestSummaryOptions testSummaryOptions;
   protected final BinTools binTools;
 
-  public TestStrategy(ExecutionOptions executionOptions, BinTools binTools) {
+  public TestStrategy(
+      ExecutionOptions executionOptions, TestSummaryOptions testSummaryOptions, BinTools binTools) {
     this.executionOptions = executionOptions;
+    this.testSummaryOptions = testSummaryOptions;
     this.binTools = binTools;
   }
 
@@ -207,12 +215,17 @@ public abstract class TestStrategy implements TestActionContext {
   public static ImmutableList<String> expandedArgsFromAction(TestRunnerAction testAction)
       throws CommandLineExpansionException, InterruptedException {
     List<String> args = Lists.newArrayList();
+    OS executionOs = testAction.getExecutionSettings().getExecutionOs();
 
     Artifact testSetup = testAction.getTestSetupScript();
-    args.add(testSetup.getExecPath().getCallablePathString());
+    args.add(testSetup.getExecPath().getCallablePathStringForOs(executionOs));
 
     if (testAction.isCoverageMode()) {
-      args.add(testAction.getCollectCoverageScript().getExecPathString());
+      args.add(
+          testAction
+              .getCollectCoverageScript()
+              .getExecPath()
+              .getCallablePathStringForOs(executionOs));
     }
 
     TestTargetExecutionSettings execSettings = testAction.getExecutionSettings();
@@ -223,6 +236,7 @@ public abstract class TestStrategy implements TestActionContext {
     }
 
     // Execute the test using the alias in the runfiles tree, as mandated by the Test Encyclopedia.
+    // Do not use getCallablePathStringForOs as tw.exe expects a path with forward slashes.
     args.add(execSettings.getExecutable().getRunfilesPath().getCallablePathString());
     Iterables.addAll(args, execSettings.getArgs().arguments());
     return ImmutableList.copyOf(args);
@@ -230,22 +244,32 @@ public abstract class TestStrategy implements TestActionContext {
 
   private static void addRunUnderArgs(TestRunnerAction testAction, List<String> args) {
     TestTargetExecutionSettings execSettings = testAction.getExecutionSettings();
-    if (execSettings.getRunUnderExecutable() != null) {
-      args.add(execSettings.getRunUnderExecutable().getRunfilesPath().getCallablePathString());
-    } else {
-      if (execSettings.needsShell(testAction.isExecutedOnWindows())) {
-        // TestActionBuilder constructs TestRunnerAction with a 'null' shell only when none is
-        // required. Something clearly went wrong.
-        Preconditions.checkNotNull(testAction.getShExecutableMaybe(), "%s", testAction);
-        String shellExecutable = testAction.getShExecutableMaybe().getPathString();
-        args.add(shellExecutable);
-        args.add("-c");
-        args.add("\"$@\"");
-        args.add(shellExecutable); // Sets $0.
+    OS executionOs = execSettings.getExecutionOs();
+    RunUnder runUnder = execSettings.getRunUnder();
+    switch (runUnder) {
+      case LabelRunUnder ignored -> {
+        args.add(
+            execSettings
+                .getRunUnderExecutable()
+                .getRunfilesPath()
+                .getCallablePathStringForOs(executionOs));
       }
-      args.add(execSettings.getRunUnder().getCommand());
+      case CommandRunUnder commandRunUnder -> {
+        if (execSettings.needsShell()) {
+          // TestActionBuilder constructs TestRunnerAction with a 'null' shell only when none is
+          // required. Something clearly went wrong.
+          Preconditions.checkNotNull(testAction.getShExecutableMaybe(), "%s", testAction);
+          String shellExecutable =
+              testAction.getShExecutableMaybe().getCallablePathStringForOs(executionOs);
+          args.add(shellExecutable);
+          args.add("-c");
+          args.add("\"$@\"");
+          args.add(shellExecutable); // Sets $0.
+        }
+        args.add(commandRunUnder.command());
+      }
     }
-    args.addAll(testAction.getExecutionSettings().getRunUnder().getOptions());
+    args.addAll(runUnder.options());
   }
 
   /**
@@ -258,7 +282,7 @@ public abstract class TestStrategy implements TestActionContext {
   public int getTestAttempts(TestRunnerAction action) {
     return action.getTestProperties().isFlaky()
         ? getTestAttemptsForFlakyTest(action)
-        : getTestAttempts(action, /*defaultTestAttempts=*/ 1);
+        : getTestAttempts(action, /* defaultTestAttempts= */ 1);
   }
 
   private int getTestAttempts(TestRunnerAction action, int defaultTestAttempts) {
@@ -267,7 +291,7 @@ public abstract class TestStrategy implements TestActionContext {
   }
 
   public int getTestAttemptsForFlakyTest(TestRunnerAction action) {
-    return getTestAttempts(action, /*defaultTestAttempts=*/ 3);
+    return getTestAttempts(action, /* defaultTestAttempts= */ 3);
   }
 
   private static int getTestAttemptsPerLabel(
@@ -360,7 +384,7 @@ public abstract class TestStrategy implements TestActionContext {
       ActionExecutionContext actionExecutionContext,
       TestResultData testResultData,
       String testName,
-      Path testLog)
+      @Nullable Path testLog)
       throws IOException {
     boolean isPassed = testResultData.getTestPassed();
     try {
@@ -376,15 +400,29 @@ public abstract class TestStrategy implements TestActionContext {
       if (isPassed) {
         actionExecutionContext.getEventHandler().handle(Event.of(EventKind.PASS, null, testName));
       } else {
+        PathFragment testLogPathToOutput = null;
+        if (testLog != null) {
+          testLogPathToOutput =
+              testSummaryOptions.printRelativeTestLogPaths
+                  ? testLog
+                      .asFragment()
+                      .relativeTo(actionExecutionContext.getExecRoot().asFragment())
+                  : testLog.asFragment();
+        }
         if (testResultData.hasStatusDetails()) {
           actionExecutionContext
               .getEventHandler()
               .handle(Event.error(testName + ": " + testResultData.getStatusDetails()));
         }
         if (testResultData.getStatus() == BlazeTestStatus.TIMEOUT) {
+          String message =
+              String.format(
+                  "%s%s",
+                  testName,
+                  testLogPathToOutput != null ? " (see " + testLogPathToOutput + ")" : "");
           actionExecutionContext
               .getEventHandler()
-              .handle(Event.of(EventKind.TIMEOUT, null, testName + " (see " + testLog + ")"));
+              .handle(Event.of(EventKind.TIMEOUT, null, message));
         } else if (testResultData.getStatus() == BlazeTestStatus.INCOMPLETE) {
           actionExecutionContext
               .getEventHandler()
@@ -395,7 +433,12 @@ public abstract class TestStrategy implements TestActionContext {
                   .setWaitResponse(testResultData.getExitCode())
                   .setTimedOut(testResultData.getStatus() == BlazeTestStatus.TIMEOUT)
                   .build();
-          String message = String.format("%s (%s) (see %s)", testName, ts.toShortString(), testLog);
+          String message =
+              String.format(
+                  "%s (%s)%s",
+                  testName,
+                  ts.toShortString(),
+                  testLogPathToOutput != null ? " (see " + testLogPathToOutput + ")" : "");
           actionExecutionContext.getEventHandler().handle(Event.of(EventKind.FAIL, null, message));
         }
       }
@@ -465,10 +508,9 @@ public abstract class TestStrategy implements TestActionContext {
       if (this == o) {
         return true;
       }
-      if (!(o instanceof ShardKey)) {
+      if (!(o instanceof ShardKey s)) {
         return false;
       }
-      ShardKey s = (ShardKey) o;
       return owner.equals(s.owner) && shard == s.shard;
     }
   }

@@ -40,6 +40,7 @@ import com.google.devtools.build.lib.bazel.bzlmod.modcommand.ModOptions.OutputFo
 import com.google.devtools.build.lib.bazel.bzlmod.modcommand.OutputFormatters.OutputFormatter;
 import com.google.devtools.build.lib.bazel.bzlmod.modcommand.OutputFormatters.OutputFormatter.Explanation;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.LabelConstants;
 import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.util.MaybeCompleteSet;
@@ -296,7 +297,7 @@ public class ModExecutorTest {
                 buildAugmentedModule("B", "1.0")
                     .addStillDependant(ModuleKey.ROOT)
                     .addChangedDep("C", "1.0", "0.1", ResolutionReason.MINIMAL_VERSION_SELECTION)
-                    .addChangedDep("E", "", "1.0", ResolutionReason.LOCAL_PATH_OVERRIDE)
+                    .addChangedDep("E", "", "1.0", ResolutionReason.NON_REGISTRY_OVERRIDE)
                     .buildEntry())
             .put(
                 buildAugmentedModule("C", "1.0")
@@ -358,13 +359,13 @@ public class ModExecutorTest {
     assertThat(
             formatter.getExtraResolutionExplanation(
                 createModuleKey("E", "1.0"), createModuleKey("B", "1.0"), depGraph, options))
-        .isEqualTo(Explanation.create(Version.EMPTY, ResolutionReason.LOCAL_PATH_OVERRIDE, null));
+        .isEqualTo(Explanation.create(Version.EMPTY, ResolutionReason.NON_REGISTRY_OVERRIDE, null));
 
     assertThat(
             formatter.getExtraResolutionExplanation(
                 createModuleKey("E", ""), createModuleKey("B", "1.0"), depGraph, options))
         .isEqualTo(
-            Explanation.create(Version.parse("1.0"), ResolutionReason.LOCAL_PATH_OVERRIDE, null));
+            Explanation.create(Version.parse("1.0"), ResolutionReason.NON_REGISTRY_OVERRIDE, null));
   }
 
   @Test
@@ -606,12 +607,14 @@ public class ModExecutorTest {
                 ModuleExtensionUsage.builder()
                     .setExtensionBzlFile("//extensions:extensions.bzl")
                     .setExtensionName("maven")
-                    .setLocation(Location.fromFileLineColumn("C@1.0/MODULE.bazel", 2, 23))
-                    .setImports(ImmutableBiMap.of("repo1", "repo1", "repo3", "repo3"))
-                    .setUsingModule(createModuleKey("C", "1.0"))
-                    .setDevImports(ImmutableSet.of())
-                    .setHasDevUseExtension(false)
-                    .setHasNonDevUseExtension(true)
+                    .setRepoOverrides(ImmutableMap.of())
+                    .addProxy(
+                        ModuleExtensionUsage.Proxy.builder()
+                            .setLocation(Location.fromFileLineColumn("C@1.0/MODULE.bazel", 2, 23))
+                            .setImports(ImmutableBiMap.of("repo1", "repo1", "repo3", "repo3"))
+                            .setDevDependency(false)
+                            .setContainingModuleFilePath(LabelConstants.MODULE_DOT_BAZEL_FILE_NAME)
+                            .build())
                     .build())
             .put(
                 mavenId,
@@ -619,12 +622,14 @@ public class ModExecutorTest {
                 ModuleExtensionUsage.builder()
                     .setExtensionBzlFile("//extensions:extensions.bzl")
                     .setExtensionName("maven")
-                    .setLocation(Location.fromFileLineColumn("D@1.0/MODULE.bazel", 1, 10))
-                    .setImports(ImmutableBiMap.of("repo1", "repo1", "repo2", "repo2"))
-                    .setUsingModule(createModuleKey("D", "1.0"))
-                    .setDevImports(ImmutableSet.of())
-                    .setHasDevUseExtension(false)
-                    .setHasNonDevUseExtension(true)
+                    .setRepoOverrides(ImmutableMap.of())
+                    .addProxy(
+                        ModuleExtensionUsage.Proxy.builder()
+                            .setLocation(Location.fromFileLineColumn("D@1.0/MODULE.bazel", 1, 10))
+                            .setImports(ImmutableBiMap.of("repo1", "repo1", "repo2", "repo2"))
+                            .setDevDependency(false)
+                            .setContainingModuleFilePath(LabelConstants.MODULE_DOT_BAZEL_FILE_NAME)
+                            .build())
                     .build())
             .put(
                 gradleId,
@@ -632,12 +637,14 @@ public class ModExecutorTest {
                 ModuleExtensionUsage.builder()
                     .setExtensionBzlFile("//extensions:extensions.bzl")
                     .setExtensionName("gradle")
-                    .setLocation(Location.fromFileLineColumn("Y@2.0/MODULE.bazel", 2, 13))
-                    .setImports(ImmutableBiMap.of("repo2", "repo2"))
-                    .setUsingModule(createModuleKey("Y", "2.0"))
-                    .setDevImports(ImmutableSet.of())
-                    .setHasDevUseExtension(false)
-                    .setHasNonDevUseExtension(true)
+                    .setRepoOverrides(ImmutableMap.of())
+                    .addProxy(
+                        ModuleExtensionUsage.Proxy.builder()
+                            .setLocation(Location.fromFileLineColumn("Y@2.0/MODULE.bazel", 2, 13))
+                            .setImports(ImmutableBiMap.of("repo2", "repo2"))
+                            .setDevDependency(false)
+                            .setContainingModuleFilePath(LabelConstants.MODULE_DOT_BAZEL_FILE_NAME)
+                            .build())
                     .build())
             .put(
                 mavenId,
@@ -645,8 +652,14 @@ public class ModExecutorTest {
                 ModuleExtensionUsage.builder()
                     .setExtensionBzlFile("//extensions:extensions.bzl")
                     .setExtensionName("maven")
-                    .setLocation(Location.fromFileLineColumn("Y@2.0/MODULE.bazel", 13, 10))
-                    .setImports(ImmutableBiMap.of("myrepo", "repo5"))
+                    .setRepoOverrides(ImmutableMap.of())
+                    .addProxy(
+                        ModuleExtensionUsage.Proxy.builder()
+                            .setLocation(Location.fromFileLineColumn("Y@2.0/MODULE.bazel", 13, 10))
+                            .setImports(ImmutableBiMap.of("myrepo", "repo5"))
+                            .setDevDependency(false)
+                            .setContainingModuleFilePath(LabelConstants.MODULE_DOT_BAZEL_FILE_NAME)
+                            .build())
                     .addTag(buildTag("dep").addAttr("coord", "junit").build())
                     .addTag(buildTag("dep").addAttr("coord", "guava").build())
                     .addTag(
@@ -655,10 +668,6 @@ public class ModExecutorTest {
                                 "pom_xmls",
                                 StarlarkList.immutableOf("//:pom.xml", "@bar//:pom.xml"))
                             .build())
-                    .setUsingModule(createModuleKey("Y", "2.0"))
-                    .setDevImports(ImmutableSet.of())
-                    .setHasDevUseExtension(false)
-                    .setHasNonDevUseExtension(true)
                     .build())
             .buildOrThrow();
 

@@ -15,6 +15,7 @@
 package com.google.devtools.build.lib.packages;
 
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.devtools.build.lib.skyframe.BzlLoadValue.keyForBuild;
 import static org.junit.Assert.assertThrows;
 
 import com.google.common.collect.ImmutableMap;
@@ -28,6 +29,7 @@ import javax.annotation.Nullable;
 import net.starlark.java.eval.EvalException;
 import net.starlark.java.eval.StarlarkInt;
 import net.starlark.java.eval.StarlarkValue;
+import net.starlark.java.eval.SymbolGenerator;
 import net.starlark.java.syntax.Location;
 import net.starlark.java.syntax.TokenKind;
 import org.junit.Test;
@@ -132,14 +134,16 @@ public class StarlarkInfoTest {
 
   /** Creates an unexported schemaless provider type with builtin location. */
   private static StarlarkProvider makeProvider() {
-    return StarlarkProvider.builder(Location.BUILTIN).build();
+    return StarlarkProvider.builder(Location.BUILTIN)
+        .buildWithIdentityToken(SymbolGenerator.createTransient().generate());
   }
 
   /** Creates an exported schemaless provider type with builtin location. */
   private static StarlarkProvider makeExportedProvider() {
     StarlarkProvider.Key key =
-        new StarlarkProvider.Key(Label.parseCanonicalUnchecked("//package:target"), "provider");
-    return StarlarkProvider.builder(Location.BUILTIN).setExported(key).build();
+        new StarlarkProvider.Key(
+            keyForBuild(Label.parseCanonicalUnchecked("//package:target")), "provider");
+    return StarlarkProvider.builder(Location.BUILTIN).buildExported(key);
   }
 
   /**
@@ -156,66 +160,6 @@ public class StarlarkInfoTest {
       values.put("f2", v2);
     }
     return StarlarkInfo.create(provider, values.build(), Location.BUILTIN);
-  }
-
-  // Tests Ganapathy permute algorithm on arrays of various lengths from Fibonacci sequence.
-  @Test
-  public void testPermute() throws Exception {
-    boolean ok = true;
-    // (a, b) is the Fibonacci generator. We use a as the array length.
-    for (int a = 0, b = 1; a < 1000; ) {
-      // generate array of 'a' k/v pairs
-      Integer[] array = new Integer[2 * a];
-      for (int i = 0; i < a; i++) {
-        array[2 * i] = i + 1; // keys are positive
-        array[2 * i + 1] = -i - 1; // value is negation of corresponding key
-      }
-      StarlarkInfoNoSchema.permute(array);
-
-      // Assert that keys (positive) appear before values (negative).
-      for (int i = 0; i < 2 * a; i++) {
-        if ((i < a) != (array[i] > 0)) {
-          System.err.printf(
-              "a=%d: at index %d, keys not before values: %s\n", a, i, Arrays.toString(array));
-          ok = false;
-          break;
-        }
-      }
-
-      // Assert that key/value correspondence is maintained.
-      for (int i = 0; i < a; i++) {
-        int k = array[i];
-        int v = array[i + a];
-        if (k != -v) {
-          System.err.printf(
-              "a=%d: at index %d, key=%d but value=%d, want %d: %s\n",
-              a, i, k, v, -k, Arrays.toString(array));
-          ok = false;
-          break;
-        }
-      }
-
-      // Assert that all keys in input remain present in output.
-      Integer[] sortedKeys = Arrays.copyOf(array, a);
-      Arrays.sort(sortedKeys);
-      for (int i = 0; i < a; i++) {
-        if (sortedKeys[i] != i + 1) {
-          System.err.printf(
-              "a=%d: at index %d of sorted keys, got %d, want %d: %s\n",
-              a, i, sortedKeys[i], i + 1, Arrays.toString(sortedKeys));
-          ok = false;
-          break;
-        }
-      }
-
-      // next Fibonacci number
-      int c = a + b;
-      a = b;
-      b = c;
-    }
-    if (!ok) {
-      throw new AssertionError("failed");
-    }
   }
 
   // Tests sortPairs using arrays of various lengths from Fibonacci sequence.

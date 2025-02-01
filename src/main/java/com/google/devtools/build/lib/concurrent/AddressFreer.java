@@ -15,10 +15,12 @@ package com.google.devtools.build.lib.concurrent;
 
 import static com.google.devtools.build.lib.unsafe.UnsafeProvider.unsafe;
 
+
 import java.lang.ref.Cleaner;
 import sun.misc.Unsafe;
 
 /** Used to cleanup memory allocated by {@link Unsafe#allocateMemory} using {@link Cleaner}. */
+@SuppressWarnings("SunApi") // TODO: b/359688989 - clean this up
 final class AddressFreer implements Runnable {
   private final long address;
 
@@ -26,6 +28,7 @@ final class AddressFreer implements Runnable {
     this.address = address;
   }
 
+  // TODO: b/386384684 - remove Unsafe usage
   @Override
   public void run() {
     unsafe().freeMemory(address);

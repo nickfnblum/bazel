@@ -19,14 +19,15 @@
 #ifndef BAZEL_SRC_MAIN_CPP_BLAZE_UTIL_H_
 #define BAZEL_SRC_MAIN_CPP_BLAZE_UTIL_H_
 
+#include <stdint.h>
 #include <sys/types.h>
 
 #include <map>
-#include <sstream>
 #include <string>
 #include <vector>
 
-#include "src/main/cpp/util/path.h"
+#include "src/main/cpp/util/logging.h"
+#include "src/main/cpp/util/path_platform.h"
 
 namespace blaze {
 
@@ -92,7 +93,7 @@ extern const unsigned int kPostKillGracePeriodSeconds;
 
 // Control the output of debug information by debug_log.
 // Revisit once client logging is fixed (b/32939567).
-void SetDebugLog(bool enabled);
+void SetDebugLog(blaze_util::LoggingDetail detail);
 
 // Returns true if this Bazel instance is running inside of a Bazel test.
 // This method observes the TEST_TMPDIR envvar.
@@ -128,6 +129,31 @@ class WithEnvVars {
  public:
   WithEnvVars(const std::map<std::string, EnvVarValue>& vars);
   ~WithEnvVars();
+};
+
+struct DurationMillis {
+ public:
+  uint64_t millis;
+
+  DurationMillis() : millis(0) {}
+
+  DurationMillis(const uint64_t start, const uint64_t end)
+      : millis(ComputeDuration(start, end)) {}
+
+  DurationMillis& operator+=(DurationMillis& other) {
+    millis += other.millis;
+    return *this;
+  }
+
+ private:
+  static uint64_t ComputeDuration(const uint64_t start, const uint64_t end) {
+    if (end < start) {
+      BAZEL_LOG(WARNING) << "Invalid duration: start=" << start
+                         << ", end=" << end;
+      return 0;
+    }
+    return end - start;
+  }
 };
 
 }  // namespace blaze

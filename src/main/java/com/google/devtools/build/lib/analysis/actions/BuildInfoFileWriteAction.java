@@ -18,7 +18,6 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.actions.AbstractAction;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
 import com.google.devtools.build.lib.actions.ActionExecutionException;
@@ -26,6 +25,7 @@ import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.ActionResult;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.ArtifactExpander;
 import com.google.devtools.build.lib.analysis.WorkspaceStatusAction;
 import com.google.devtools.build.lib.cmdline.BazelModuleContext;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
@@ -46,6 +46,7 @@ import net.starlark.java.eval.Starlark;
 import net.starlark.java.eval.StarlarkFunction;
 import net.starlark.java.eval.StarlarkSemantics;
 import net.starlark.java.eval.StarlarkThread;
+import net.starlark.java.eval.SymbolGenerator;
 
 /**
  * Translates workspace status text files(<a
@@ -120,16 +121,15 @@ public final class BuildInfoFileWriteAction extends AbstractAction {
     try (Mutability mutability = Mutability.create("translate_build_info_file")) {
       try {
         StarlarkThread thread =
-            new StarlarkThread(
+            StarlarkThread.create(
                 mutability,
                 semantics,
-                isVolatile() ? "transform_version_file callback" : "transform_info_file callback");
+                isVolatile() ? "transform_version_file callback" : "transform_info_file callback",
+                // Since the result of this thread is a String to String Dict, it should not result
+                // in any reference-equals objects.
+                SymbolGenerator.createTransient());
         substitutionDictObject =
-            Starlark.call(
-                thread,
-                translationCallback,
-                ImmutableList.of(Dict.immutableCopyOf(values)),
-                ImmutableMap.of());
+            Starlark.positionalOnlyCall(thread, translationCallback, Dict.immutableCopyOf(values));
       } catch (EvalException e) {
         String message =
             String.format(
@@ -188,7 +188,7 @@ public final class BuildInfoFileWriteAction extends AbstractAction {
   @Override
   protected void computeKey(
       ActionKeyContext actionKeyContext,
-      @Nullable Artifact.ArtifactExpander artifactExpander,
+      @Nullable ArtifactExpander artifactExpander,
       Fingerprint fp) {
     fp.addString(GUID);
     fp.addBoolean(isVolatile);

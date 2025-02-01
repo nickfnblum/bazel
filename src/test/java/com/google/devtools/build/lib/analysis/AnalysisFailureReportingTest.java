@@ -64,8 +64,12 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
   public void testMissingRequiredAttribute() throws Exception {
     scratch.file(
         "foo/BUILD",
-        "genrule(name = 'foo',", // missing "out" attribute
-        "        cmd = '')");
+        """
+        genrule(
+            name = "foo",  # missing "out" attribute
+            cmd = "",
+        )
+        """);
     AnalysisResult result = update(eventBus, defaultFlags().with(Flag.KEEP_GOING), "//foo");
     assertThat(result.hasError()).isTrue();
     Label topLevel = Label.parseCanonicalUnchecked("//foo");
@@ -88,10 +92,14 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
   public void testMissingDependency() throws Exception {
     scratch.file(
         "foo/BUILD",
-        "genrule(name = 'foo',",
-        "        tools = ['//bar'],",
-        "        cmd = 'command',",
-        "        outs = ['foo.txt'])");
+        """
+        genrule(
+            name = "foo",
+            outs = ["foo.txt"],
+            cmd = "command",
+            tools = ["//bar"],
+        )
+        """);
     AnalysisResult result = update(eventBus, defaultFlags().with(Flag.KEEP_GOING), "//foo");
     assertThat(result.hasError()).isTrue();
     Label topLevel = Label.parseCanonicalUnchecked("//foo");
@@ -106,7 +114,7 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
                     "BUILD file not found in any of the following"
                         + " directories. Add a BUILD file to a directory to mark it as a"
                         + " package.\n"
-                        + " - /workspace/bar",
+                        + " - bar",
                     Code.BUILD_FILE_MISSING)));
   }
 
@@ -114,11 +122,13 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
   public void testExpanderFailure() throws Exception {
     scratch.file(
         "test/BUILD",
-        "genrule(",
-        "    name = 'bad',",
-        "    outs = ['bad.out'],",
-        "    cmd = 'cp $< $@',  # Error to use $< with no srcs",
-        ")");
+        """
+        genrule(
+            name = "bad",
+            outs = ["bad.out"],
+            cmd = "cp $< $@",  # Error to use $< with no srcs
+        )
+        """);
     AnalysisResult result = update(eventBus, defaultFlags().with(Flag.KEEP_GOING), "//test:bad");
     assertThat(result.hasError()).isTrue();
     Label topLevel = Label.parseCanonicalUnchecked("//test:bad");
@@ -140,11 +150,23 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
    */
   @Test
   public void testSymlinkCycleReportedExactlyOnce() throws Exception {
-    scratch.file("gp/BUILD", "sh_library(name = 'gp', deps = ['//p'])");
-    scratch.file("p/BUILD", "sh_library(name = 'p', deps = ['//c'])");
-    scratch.file("c/BUILD", "sh_library(name = 'c', deps = ['//cycles1'])");
+    scratch.file(
+        "gp/BUILD",
+        "load('//test_defs:foo_library.bzl', 'foo_library')",
+        "foo_library(name = 'gp', deps = ['//p'])");
+    scratch.file(
+        "p/BUILD",
+        "load('//test_defs:foo_library.bzl', 'foo_library')",
+        "foo_library(name = 'p', deps = ['//c'])");
+    scratch.file(
+        "c/BUILD",
+        "load('//test_defs:foo_library.bzl', 'foo_library')",
+        "foo_library(name = 'c', deps = ['//cycles1'])");
     Path cycles1BuildFilePath =
-        scratch.file("cycles1/BUILD", "sh_library(name = 'cycles1', srcs = glob(['*.sh']))");
+        scratch.file(
+            "cycles1/BUILD",
+            "load('//test_defs:foo_library.bzl', 'foo_library')",
+            "foo_library(name = 'cycles1', srcs = glob(['*.sh']))");
     cycles1BuildFilePath
         .getParentDirectory()
         .getRelative("cycles1.sh")
@@ -167,8 +189,14 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
 
   @Test
   public void testVisibilityError() throws Exception {
-    scratch.file("foo/BUILD", "sh_library(name = 'foo', deps = ['//bar'])");
-    scratch.file("bar/BUILD", "sh_library(name = 'bar', visibility = ['//visibility:private'])");
+    scratch.file(
+        "foo/BUILD",
+        "load('//test_defs:foo_library.bzl', 'foo_library')",
+        "foo_library(name = 'foo', deps = ['//bar'])");
+    scratch.file(
+        "bar/BUILD",
+        "load('//test_defs:foo_library.bzl', 'foo_library')",
+        "foo_library(name = 'bar', visibility = ['//visibility:private'])");
 
     AnalysisResult result = update(eventBus, defaultFlags().with(Flag.KEEP_GOING), "//foo");
     assertThat(result.hasError()).isTrue();
@@ -180,14 +208,14 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
                 Label.parseCanonical("//foo"),
                 collector.getOnlyConfigurationId(),
                 createAnalysisDetailedExitCode(
-                    "in sh_library rule //foo:foo: "
+                    "in foo_library rule //foo:foo: "
                         + createVisibilityErrorMessage(
                             "target '//bar:bar'", "target '//foo:foo'"))));
   }
 
   @Test
   public void testFileVisibilityError() throws Exception {
-    scratch.file("foo/BUILD", "sh_library(name = 'foo', srcs = ['//bar:bar.sh'])");
+    scratch.file("foo/BUILD", "filegroup(name = 'foo', srcs = ['//bar:bar.sh'])");
     scratch.file("bar/BUILD", "exports_files(['bar.sh'], visibility = ['//visibility:private'])");
     scratch.file("bar/bar.sh");
 
@@ -204,7 +232,7 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
                 DetailedExitCode.of(
                     FailureDetail.newBuilder()
                         .setMessage(
-                            "in sh_library rule //foo:foo: "
+                            "in filegroup rule //foo:foo: "
                                 + createVisibilityErrorMessage(
                                     "target '//bar:bar.sh'", "target '//foo:foo'")
                                 + ". To set the visibility of that source file target, use the"
@@ -217,8 +245,14 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
 
   @Test
   public void testVisibilityErrorNoKeepGoing() throws Exception {
-    scratch.file("foo/BUILD", "sh_test(name = 'foo', srcs = ['test.sh'], deps = ['//bar'])");
-    scratch.file("bar/BUILD", "sh_library(name = 'bar', visibility = ['//visibility:private'])");
+    scratch.file(
+        "foo/BUILD",
+        "load('//test_defs:foo_test.bzl', 'foo_test')",
+        "foo_test(name = 'foo', srcs = ['test.sh'], deps = ['//bar'])");
+    scratch.file(
+        "bar/BUILD",
+        "load('//test_defs:foo_library.bzl', 'foo_library')",
+        "foo_library(name = 'bar', visibility = ['//visibility:private'])");
 
     try {
       update(eventBus, defaultFlags(), "//foo");
@@ -230,7 +264,7 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
     BuildConfigurationValue expectedConfig =
         skyframeExecutor.getSkyframeBuildView().getBuildConfiguration();
     String message =
-        "in sh_test rule //foo:foo: "
+        "in foo_test rule //foo:foo: "
             + createVisibilityErrorMessage("target '//bar:bar'", "target '//foo:foo'");
     assertThat(collector.events.get(topLevel))
         .containsExactly(

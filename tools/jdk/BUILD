@@ -17,12 +17,11 @@ filegroup(
         "launcher_flag_alias.bzl",
         "local_java_repository.bzl",
         "nosystemjdk/README",
-        "proguard_whitelister.py",
-        "proguard_whitelister_test.py",
-        "proguard_whitelister_test_input.pgcfg",
+        "proguard_allowlister.py",
+        "proguard_allowlister_test.py",
+        "proguard_allowlister_test_input.pgcfg",
         "remote_java_repository.bzl",
         "toolchain_utils.bzl",
-        ":java_stub_template.txt",
     ],
 )
 
@@ -35,17 +34,4 @@ filegroup(
 filegroup(
     name = "package-srcs",
     srcs = glob(["**"]),
-)
-
-genrule(
-    name = "copy_java_stub_template",
-    srcs = [
-        "//src/main/java/com/google/devtools/build/lib/bazel/rules/java:java_stub_template.txt",
-    ],
-    outs = ["java_stub_template.txt"],
-    cmd = "cp $< $@",
-    visibility = [
-        "//tools:__pkg__",
-        "//tools/jdk:__pkg__",
-    ],
 )

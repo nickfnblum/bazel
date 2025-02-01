@@ -206,6 +206,13 @@ symlink in your workspace directory.
 The [JSON trace profile](/advanced/performance/json-trace-profile) can be very
 useful to quickly understand what Bazel spent time on during the invocation.
 
+The [`--experimental_command_profile`](https://bazel.build/reference/command-line-reference#flag--experimental_command_profile)
+flag may be used to capture Java Flight Recorder profiles of various kinds
+(cpu time, wall time, memory allocations and lock contention).
+
+The [`--starlark_cpu_profile`](https://bazel.build/reference/command-line-reference#flag--starlark_cpu_profile)
+flag may be used to write a pprof profile of CPU usage by all Starlark threads.
+
 ## Memory profiling {:#memory-profiling}
 
 Bazel comes with a built-in memory profiler that can help you check your rule’s
@@ -218,13 +225,13 @@ You must pass these two startup flags to *every* Bazel invocation:
 
   ```
   STARTUP_FLAGS=\
-  --host_jvm_args=-javaagent:<path to java-allocation-instrumenter-3.3.0.jar> \
+  --host_jvm_args=-javaagent:<path to java-allocation-instrumenter-3.3.4.jar> \
   --host_jvm_args=-DRULE_MEMORY_TRACKER=1
   ```
 Note: You can download the allocation instrumenter jar file from [Maven Central
 Repository][allocation-instrumenter-link].
 
-[allocation-instrumenter-link]: https://repo1.maven.org/maven2/com/google/code/java-allocation-instrumenter/java-allocation-instrumenter/3.3.0
+[allocation-instrumenter-link]: https://repo1.maven.org/maven2/com/google/code/java-allocation-instrumenter/java-allocation-instrumenter/3.3.4
 
 These start the server in memory tracking mode. If you forget these for even
 one Bazel invocation the server will restart and you will have to start over.

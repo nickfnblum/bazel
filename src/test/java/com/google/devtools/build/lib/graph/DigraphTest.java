@@ -55,11 +55,6 @@ public class DigraphTest {
     }
 
     @Override
-    public String getName() {
-      return null;
-    }
-
-    @Override
     public Package getPackage() {
       return null;
     }
@@ -90,7 +85,7 @@ public class DigraphTest {
     }
 
     @Override
-    public RuleVisibility getVisibility() {
+    public RuleVisibility getRawVisibility() {
       return null;
     }
 

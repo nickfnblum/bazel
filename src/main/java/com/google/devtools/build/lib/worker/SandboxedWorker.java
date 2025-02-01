@@ -16,29 +16,28 @@ package com.google.devtools.build.lib.worker;
 
 import static com.google.devtools.build.lib.sandbox.LinuxSandboxCommandLineBuilder.NetworkNamespace.NETNS;
 
-import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
 import com.google.common.flogger.GoogleLogger;
 import com.google.devtools.build.lib.actions.UserExecException;
+import com.google.devtools.build.lib.exec.TreeDeleter;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.SilentCloseable;
 import com.google.devtools.build.lib.sandbox.CgroupsInfo;
 import com.google.devtools.build.lib.sandbox.LinuxSandboxCommandLineBuilder;
-import com.google.devtools.build.lib.sandbox.LinuxSandboxCommandLineBuilder.BindMount;
 import com.google.devtools.build.lib.sandbox.LinuxSandboxUtil;
 import com.google.devtools.build.lib.sandbox.SandboxHelpers;
 import com.google.devtools.build.lib.sandbox.SandboxHelpers.SandboxInputs;
 import com.google.devtools.build.lib.sandbox.SandboxHelpers.SandboxOutputs;
+import com.google.devtools.build.lib.sandbox.cgroups.VirtualCgroupFactory;
 import com.google.devtools.build.lib.shell.Subprocess;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Symlinks;
-import java.io.File;
 import java.io.IOException;
-import java.util.Map.Entry;
 import java.util.Set;
 import java.util.SortedMap;
 import javax.annotation.Nullable;
@@ -46,76 +45,49 @@ import javax.annotation.Nullable;
 /** A {@link SingleplexWorker} that runs inside a sandboxed execution root. */
 final class SandboxedWorker extends SingleplexWorker {
 
-  public static final String TMP_DIR_MOUNT_NAME = "_tmp";
-
-  @AutoValue
-  public abstract static class WorkerSandboxOptions {
-    // Need to have this data class because we can't depend on SandboxOptions in here.
-    abstract boolean fakeHostname();
-
-    abstract boolean fakeUsername();
-
-    abstract boolean debugMode();
-
-    abstract ImmutableList<PathFragment> tmpfsPath();
-
-    abstract ImmutableList<String> writablePaths();
-
-    abstract Path sandboxBinary();
-
-    abstract int memoryLimit();
-
-    abstract ImmutableSet<Path> inaccessiblePaths();
-
-    abstract ImmutableList<Entry<String, String>> additionalMountPaths();
-
-    public static WorkerSandboxOptions create(
-        Path sandboxBinary,
-        boolean fakeHostname,
-        boolean fakeUsername,
-        boolean debugMode,
-        ImmutableList<PathFragment> tmpfsPath,
-        ImmutableList<String> writablePaths,
-        int memoryLimit,
-        ImmutableSet<Path> inaccessiblePaths,
-        ImmutableList<Entry<String, String>> sandboxAdditionalMounts) {
-      return new AutoValue_SandboxedWorker_WorkerSandboxOptions(
-          fakeHostname,
-          fakeUsername,
-          debugMode,
-          tmpfsPath,
-          writablePaths,
-          sandboxBinary,
-          memoryLimit,
-          inaccessiblePaths,
-          sandboxAdditionalMounts);
-    }
-  }
+  // Need to have this data class because we can't depend on SandboxOptions in here.
+  record WorkerSandboxOptions(
+      Path sandboxBinary,
+      boolean fakeHostname,
+      boolean fakeUsername,
+      boolean debugMode,
+      ImmutableSet<PathFragment> tmpfsPath,
+      ImmutableSet<String> writablePaths,
+      int memoryLimit,
+      ImmutableSet<Path> inaccessiblePaths,
+      ImmutableMap<String, String> additionalMountPaths) {}
 
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
   private final WorkerExecRoot workerExecRoot;
+
   /** Options specific to hardened sandbox, null if not using that. */
   @Nullable private final WorkerSandboxOptions hardenedSandboxOptions;
-  /** If non-null, a directory that allows cgroup control. */
-  private String cgroupsDir;
 
   private Path inaccessibleHelperDir;
   private Path inaccessibleHelperFile;
+  private final TreeDeleter treeDeleter;
 
   SandboxedWorker(
       WorkerKey workerKey,
       int workerId,
       Path workDir,
       Path logFile,
-      @Nullable WorkerSandboxOptions hardenedSandboxOptions) {
-    super(workerKey, workerId, workDir, logFile);
+      WorkerOptions workerOptions,
+      @Nullable WorkerSandboxOptions hardenedSandboxOptions,
+      TreeDeleter treeDeleter,
+      boolean useInMemoryTracking,
+      @Nullable VirtualCgroupFactory cgroupFactory) {
+    super(workerKey, workerId, workDir, logFile, workerOptions, cgroupFactory);
+    Path tmpDirPath = SandboxHelpers.getTmpDirPath(workDir);
     this.workerExecRoot =
         new WorkerExecRoot(
             workDir,
             hardenedSandboxOptions != null
-                ? ImmutableList.of(PathFragment.create("../" + TMP_DIR_MOUNT_NAME))
-                : ImmutableList.of());
+                ? ImmutableList.of(PathFragment.create(tmpDirPath.getPathString()))
+                : ImmutableList.of(),
+            useInMemoryTracking);
     this.hardenedSandboxOptions = hardenedSandboxOptions;
+    this.treeDeleter = treeDeleter;
   }
 
   @Override
@@ -143,14 +115,11 @@ final class SandboxedWorker extends SingleplexWorker {
     return writableDirs.build();
   }
 
-  private ImmutableList<BindMount> getBindMounts(Path sandboxExecRoot, @Nullable Path sandboxTmp)
+  private SortedMap<Path, Path> getBindMounts(Path sandboxExecRoot, @Nullable Path sandboxTmp)
       throws UserExecException, IOException {
     FileSystem fs = sandboxExecRoot.getFileSystem();
     Path tmpPath = fs.getPath("/tmp");
     final SortedMap<Path, Path> bindMounts = Maps.newTreeMap();
-    ImmutableList.Builder<BindMount> result = ImmutableList.builder();
-    // Mount a fresh, empty temporary directory as /tmp for each sandbox rather than reusing the
-    // host filesystem's /tmp. Since we're in a worker, we clean this dir between requests.
     bindMounts.put(tmpPath, sandboxTmp);
     SandboxHelpers.mountAdditionalPaths(
         hardenedSandboxOptions.additionalMountPaths(), sandboxExecRoot, bindMounts);
@@ -165,19 +134,30 @@ final class SandboxedWorker extends SingleplexWorker {
       }
     }
     // TODO(larsrc): Handle hermetic tmp
-    bindMounts.forEach((k, v) -> result.add(BindMount.of(k, v)));
     LinuxSandboxUtil.validateBindMounts(bindMounts);
-    return result.build();
+    return bindMounts;
   }
 
   @Override
   protected Subprocess createProcess() throws IOException, UserExecException {
     ImmutableList<String> args = makeExecPathAbsolute(workerKey.getArgs());
+
+    // We put the sandbox inside a unique subdirectory using the worker's ID.
+    if (cgroupFactory != null) {
+      cgroup = cgroupFactory.create(workerId, ImmutableMap.of());
+    } else if (options.useCgroupsOnLinux || hardenedSandboxOptions != null) {
+      // In the event that the memory limit is 0, we defer to using Blaze's WorkerLifecycleManager
+      // to kill workers rather than cgroup's OOM killer.
+      cgroup =
+          CgroupsInfo.getBlazeSpawnsCgroup()
+              .createIndividualSpawnCgroup(
+                  "worker_sandbox_" + workerId,
+                  hardenedSandboxOptions != null ? hardenedSandboxOptions.memoryLimit() : 0);
+    }
+
     // TODO(larsrc): Check that execRoot and outputBase are not under /tmp
     if (hardenedSandboxOptions != null) {
-      // In hardened mode, we bindmount a temp dir. We put the mount dir in the parent directory to
-      // avoid clashes with workspace files.
-      Path sandboxTmp = workDir.getParentDirectory().getRelative(TMP_DIR_MOUNT_NAME);
+      Path sandboxTmp = SandboxHelpers.getTmpDirPath(workDir);
       sandboxTmp.createDirectoryAndParents();
 
       // Mostly tests require network, and some blaze run commands, but no workers.
@@ -185,19 +165,14 @@ final class SandboxedWorker extends SingleplexWorker {
           LinuxSandboxCommandLineBuilder.commandLineBuilder(
                   this.hardenedSandboxOptions.sandboxBinary())
               .setWritableFilesAndDirectories(getWritableDirs(workDir))
-              .setTmpfsDirectories(ImmutableSet.copyOf(this.hardenedSandboxOptions.tmpfsPath()))
+              .setTmpfsDirectories(hardenedSandboxOptions.tmpfsPath())
               .setPersistentProcess(true)
               .setBindMounts(getBindMounts(workDir, sandboxTmp))
-              .setUseFakeHostname(this.hardenedSandboxOptions.fakeHostname())
+              .setUseFakeHostname(hardenedSandboxOptions.fakeHostname())
               .setCreateNetworkNamespace(NETNS);
 
-      if (hardenedSandboxOptions.memoryLimit() > 0) {
-        CgroupsInfo cgroupsInfo = CgroupsInfo.getInstance();
-        // We put the sandbox inside a unique subdirectory using the worker's ID.
-        cgroupsDir =
-            cgroupsInfo.createMemoryLimitCgroupDir(
-                "worker_sandbox_" + workerId, hardenedSandboxOptions.memoryLimit());
-        commandLineBuilder.setCgroupsDir(cgroupsDir);
+      if (cgroup != null && cgroup.exists()) {
+        commandLineBuilder.setCgroupsDirs(cgroup.paths());
       }
 
       if (this.hardenedSandboxOptions.fakeUsername()) {
@@ -206,7 +181,17 @@ final class SandboxedWorker extends SingleplexWorker {
 
       args = commandLineBuilder.buildForCommand(args);
     }
-    return createProcessBuilder(args).start();
+
+    Subprocess process = createProcessBuilder(args).start();
+
+    // If using hardened sandbox (aka linux-sandbox), the linux-sandbox parent process moves the
+    // sandboxed children processes (pid 1, 2) into the cgroup. But we still need to move the
+    // linux-sandbox process into the worker cgroup. On the other hand, without linux-sandbox, Blaze
+    // needs to do this itself for the spawned worker process.
+    if (cgroup != null && cgroup.exists()) {
+      cgroup.addProcess(process.getProcessId());
+    }
+    return process;
   }
 
   @Override
@@ -214,7 +199,7 @@ final class SandboxedWorker extends SingleplexWorker {
       SandboxInputs inputFiles, SandboxOutputs outputs, Set<PathFragment> workerFiles)
       throws IOException, InterruptedException, UserExecException {
     try (SilentCloseable c = Profiler.instance().profile("workerExecRoot.createFileSystem")) {
-      workerExecRoot.createFileSystem(workerFiles, inputFiles, outputs);
+      workerExecRoot.createFileSystem(workerFiles, inputFiles, outputs, treeDeleter);
     }
 
     super.prepareExecution(inputFiles, outputs, workerFiles);
@@ -223,9 +208,9 @@ final class SandboxedWorker extends SingleplexWorker {
   @Override
   public void finishExecution(Path execRoot, SandboxOutputs outputs) throws IOException {
     super.finishExecution(execRoot, outputs);
-    if (cgroupsDir != null) {
+    if (cgroup != null && cgroup.exists()) {
       // This is only to not leave too much behind in the cgroups tree, can ignore errors.
-      new File(cgroupsDir).delete();
+      cgroup.destroy();
     }
     workerExecRoot.copyOutputs(execRoot, outputs);
   }
@@ -240,11 +225,14 @@ final class SandboxedWorker extends SingleplexWorker {
       if (inaccessibleHelperDir != null) {
         inaccessibleHelperDir.delete();
       }
-      if (cgroupsDir != null) {
+      if (cgroup != null && cgroup.exists()) {
         // This is only to not leave too much behind in the cgroups tree, can ignore errors.
-        new File(cgroupsDir).delete();
+        cgroup.destroy();
       }
       workDir.deleteTree();
+      if (hardenedSandboxOptions != null) {
+        SandboxHelpers.getTmpDirPath(workDir).deleteTree();
+      }
     } catch (IOException e) {
       logger.atWarning().withCause(e).log("Caught IOException while deleting workdir.");
     }

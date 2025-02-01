@@ -15,14 +15,13 @@
 package com.google.devtools.build.lib.analysis.actions;
 
 import static com.google.common.base.Preconditions.checkState;
-import static java.nio.charset.StandardCharsets.ISO_8859_1;
 
 import com.google.common.io.ByteStreams;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
 import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.Artifact;
-import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
+import com.google.devtools.build.lib.actions.ArtifactExpander;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
@@ -68,6 +67,8 @@ public abstract class FileWriteAction extends AbstractFileWriteAction
 
   /** Minimum length (in chars) for content to be eligible for compression. */
   private static final int COMPRESS_CHARS_THRESHOLD = 256;
+
+  private final boolean makeExecutable;
 
   /**
    * Creates a FileWriteAction to write contents to the resulting artifact fileName in the genfiles
@@ -169,12 +170,18 @@ public abstract class FileWriteAction extends AbstractFileWriteAction
       NestedSet<Artifact> inputs,
       Artifact primaryOutput,
       boolean makeExecutable) {
-    super(owner, inputs, primaryOutput, makeExecutable);
+    super(owner, inputs, primaryOutput);
+    this.makeExecutable = makeExecutable;
   }
 
   @Override
   public final String getFileContents(@Nullable EventHandler eventHandler) {
     return getFileContents();
+  }
+
+  @Override
+  public boolean makeExecutable() {
+    return makeExecutable;
   }
 
   /**
@@ -217,7 +224,7 @@ public abstract class FileWriteAction extends AbstractFileWriteAction
 
     @Override
     public DeterministicWriter newDeterministicWriter(ActionExecutionContext ctx) {
-      return out -> out.write(getFileContents().getBytes(ISO_8859_1));
+      return out -> out.write(StringUnsafe.getInstance().getInternalStringBytes(getFileContents()));
     }
 
     @Override
@@ -225,7 +232,7 @@ public abstract class FileWriteAction extends AbstractFileWriteAction
         ActionKeyContext actionKeyContext,
         @Nullable ArtifactExpander artifactExpander,
         Fingerprint fp) {
-      fp.addString(GUID).addBoolean(makeExecutable).addString(getFileContents());
+      fp.addString(GUID).addBoolean(makeExecutable()).addString(getFileContents());
     }
   }
 
@@ -283,11 +290,7 @@ public abstract class FileWriteAction extends AbstractFileWriteAction
         throw new IllegalStateException(e);
       }
 
-      try {
-        return StringUnsafe.getInstance().newInstance(uncompressedBytes, coder);
-      } catch (ReflectiveOperationException e) {
-        throw new IllegalStateException(e);
-      }
+      return StringUnsafe.getInstance().newInstance(uncompressedBytes, coder);
     }
 
     @Override
@@ -305,7 +308,7 @@ public abstract class FileWriteAction extends AbstractFileWriteAction
         ActionKeyContext actionKeyContext,
         @Nullable ArtifactExpander artifactExpander,
         Fingerprint fp) {
-      fp.addString(GUID).addBoolean(makeExecutable).addBytes(compressedBytes);
+      fp.addString(GUID).addBoolean(makeExecutable()).addBytes(compressedBytes);
     }
   }
 }

@@ -67,7 +67,7 @@ public final class SymlinkTreeStrategyTest extends BuildViewTestCase {
     StoredEventHandler eventHandler = new StoredEventHandler();
 
     when(context.getContext(SymlinkTreeActionContext.class))
-        .thenReturn(new SymlinkTreeStrategy(outputService, null, "__main__"));
+        .thenReturn(new SymlinkTreeStrategy(outputService, getExecRoot(), null, "__main__"));
     when(context.getInputPath(any())).thenAnswer((i) -> ((Artifact) i.getArgument(0)).getPath());
     when(context.getPathResolver()).thenReturn(ArtifactPathResolver.IDENTITY);
     when(context.getEventHandler()).thenReturn(eventHandler);
@@ -106,9 +106,9 @@ public final class SymlinkTreeStrategyTest extends BuildViewTestCase {
             runfiles,
             outputManifest,
             /* repoMappingManifest= */ null,
-            /* filesetRoot= */ null,
             ActionEnvironment.EMPTY,
-            RunfileSymlinksMode.EXTERNAL);
+            RunfileSymlinksMode.EXTERNAL,
+            "workspace");
 
     action.execute(context);
 
@@ -129,8 +129,9 @@ public final class SymlinkTreeStrategyTest extends BuildViewTestCase {
     OutputService outputService = mock(OutputService.class);
     StoredEventHandler eventHandler = new StoredEventHandler();
 
+    when(context.getExecRoot()).thenReturn(getExecRoot());
     when(context.getContext(SymlinkTreeActionContext.class))
-        .thenReturn(new SymlinkTreeStrategy(outputService, null, "__main__"));
+        .thenReturn(new SymlinkTreeStrategy(outputService, getExecRoot(), null, "__main__"));
     when(context.getInputPath(any())).thenAnswer((i) -> ((Artifact) i.getArgument(0)).getPath());
     when(context.getEventHandler()).thenReturn(eventHandler);
     when(outputService.canCreateSymlinkTree()).thenReturn(false);
@@ -161,9 +162,9 @@ public final class SymlinkTreeStrategyTest extends BuildViewTestCase {
             runfiles,
             outputManifest,
             /* repoMappingManifest= */ null,
-            /* filesetRoot= */ null,
             ActionEnvironment.EMPTY,
-            RunfileSymlinksMode.INTERNAL);
+            RunfileSymlinksMode.INTERNAL,
+            "workspace");
 
     action.execute(context);
     // Check that the OutputService is not used.

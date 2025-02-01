@@ -28,9 +28,7 @@ import com.google.devtools.build.lib.analysis.FileProvider;
 import com.google.devtools.build.lib.analysis.MakeVariableSupplier;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
-import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.analysis.config.CompilationMode;
-import com.google.devtools.build.lib.analysis.config.CoreOptions;
 import com.google.devtools.build.lib.analysis.starlark.StarlarkRuleContext;
 import com.google.devtools.build.lib.analysis.stringtemplate.ExpansionException;
 import com.google.devtools.build.lib.cmdline.Label;
@@ -78,6 +76,9 @@ public final class CcCommon implements StarlarkValue {
           CppActionNames.CPP_HEADER_PARSING,
           CppActionNames.CPP_MODULE_COMPILE,
           CppActionNames.CPP_MODULE_CODEGEN,
+          CppActionNames.CPP_MODULE_DEPS_SCANNING,
+          CppActionNames.CPP20_MODULE_COMPILE,
+          CppActionNames.CPP20_MODULE_CODEGEN,
           CppActionNames.ASSEMBLE,
           CppActionNames.PREPROCESS_ASSEMBLE,
           CppActionNames.CLIF_MATCH,
@@ -149,7 +150,9 @@ public final class CcCommon implements StarlarkValue {
   public static List<Pair<Artifact, Label>> getHeaders(RuleContext ruleContext) {
     Map<Artifact, Label> map = Maps.newLinkedHashMap();
     for (TransitiveInfoCollection target :
-        ruleContext.getPrerequisitesIf("hdrs", FileProvider.class)) {
+        ruleContext
+            .getRulePrerequisitesCollection()
+            .getPrerequisitesIf("hdrs", FileProvider.class)) {
       FileProvider provider = target.getProvider(FileProvider.class);
       for (Artifact artifact : provider.getFilesToBuild().toList()) {
         if (CppRuleClasses.DISALLOWED_HDRS_FILES.matches(artifact.getFilename())) {
@@ -202,23 +205,13 @@ public final class CcCommon implements StarlarkValue {
 
     @Override
     @Nullable
-    public String getMakeVariable(String variableName)
-        throws ExpansionException, InterruptedException {
+    public String getMakeVariable(String variableName) throws ExpansionException {
       if (!variableName.equals(CppConfiguration.CC_FLAGS_MAKE_VARIABLE_NAME)) {
         return null;
       }
 
-      TransitiveInfoCollection toolchain;
-      if (ruleContext.attributes().has(CcToolchainRule.CC_TOOLCHAIN_DEFAULT_ATTRIBUTE_NAME)) {
-        toolchain =
-            ruleContext.getPrerequisite(CcToolchainRule.CC_TOOLCHAIN_DEFAULT_ATTRIBUTE_NAME);
-      } else {
-        toolchain =
-            ruleContext.getPrerequisite(
-                CcToolchainRule.CC_TOOLCHAIN_DEFAULT_ATTRIBUTE_NAME_FOR_STARLARK);
-      }
-
       try {
+        CcToolchainProvider toolchain = CppHelper.getToolchain(ruleContext);
         return CcCommon.computeCcFlags(ruleContext, toolchain);
       } catch (RuleErrorException | EvalException e) {
         throw new ExpansionException(e.getMessage());
@@ -226,8 +219,7 @@ public final class CcCommon implements StarlarkValue {
     }
 
     @Override
-    public ImmutableMap<String, String> getAllMakeVariables()
-        throws ExpansionException, InterruptedException {
+    public ImmutableMap<String, String> getAllMakeVariables() throws ExpansionException {
       return ImmutableMap.of(
           CppConfiguration.CC_FLAGS_MAKE_VARIABLE_NAME,
           getMakeVariable(CppConfiguration.CC_FLAGS_MAKE_VARIABLE_NAME));
@@ -277,11 +269,11 @@ public final class CcCommon implements StarlarkValue {
    *
    * <p>But we require that the "defines" attribute consists of a single token.
    */
-  public List<String> getDefines() throws InterruptedException {
+  public List<String> getDefines() {
     return getDefinesFromAttribute(DEFINES_ATTRIBUTE);
   }
 
-  private List<String> getDefinesFromAttribute(String attr) throws InterruptedException {
+  private List<String> getDefinesFromAttribute(String attr) {
     List<String> defines = new ArrayList<>();
 
     // collect labels that can be substituted in defines
@@ -386,24 +378,6 @@ public final class CcCommon implements StarlarkValue {
       Language language,
       CcToolchainProvider toolchain,
       CppSemantics cppSemantics) {
-    return configureFeaturesOrReportRuleError(
-        ruleContext,
-        ruleContext.getConfiguration(),
-        requestedFeatures,
-        unsupportedFeatures,
-        language,
-        toolchain,
-        cppSemantics);
-  }
-
-  public static FeatureConfiguration configureFeaturesOrReportRuleError(
-      RuleContext ruleContext,
-      BuildConfigurationValue buildConfiguration,
-      ImmutableSet<String> requestedFeatures,
-      ImmutableSet<String> unsupportedFeatures,
-      Language language,
-      CcToolchainProvider toolchain,
-      CppSemantics cppSemantics) {
     try {
       cppSemantics.validateLayeringCheckFeatures(
           ruleContext, /* aspectDescriptor= */ null, toolchain, ImmutableSet.of());
@@ -412,7 +386,7 @@ public final class CcCommon implements StarlarkValue {
           unsupportedFeatures,
           language,
           toolchain,
-          buildConfiguration.getFragment(CppConfiguration.class));
+          toolchain.getCppConfiguration());
     } catch (EvalException e) {
       ruleContext.ruleError(e.getMessage());
       return FeatureConfiguration.EMPTY;
@@ -500,9 +474,10 @@ public final class CcCommon implements StarlarkValue {
     FdoContext.BranchFdoProfile branchFdoProvider = toolchain.getFdoContext().getBranchFdoProfile();
 
     boolean enablePropellerOptimize =
-        (cppConfiguration.getPropellerOptimizeLabel() != null
-            || cppConfiguration.getPropellerOptimizeAbsoluteCCProfile() != null
-            || cppConfiguration.getPropellerOptimizeAbsoluteLdProfile() != null);
+        (toolchain.getFdoContext().getPropellerOptimizeInputFile() != null
+            && (toolchain.getFdoContext().getPropellerOptimizeInputFile().getCcArtifact() != null
+                || toolchain.getFdoContext().getPropellerOptimizeInputFile().getLdArtifact()
+                    != null));
 
     if (branchFdoProvider != null && cppConfiguration.getCompilationMode() == CompilationMode.OPT) {
       if ((branchFdoProvider.isLlvmFdo() || branchFdoProvider.isLlvmCSFdo())
@@ -527,6 +502,10 @@ public final class CcCommon implements StarlarkValue {
       }
       if (branchFdoProvider.isAutoFdo()) {
         allFeatures.add(CppRuleClasses.AUTOFDO);
+        // Support implicit enabling of Memprof for AFDO unless it has been disabled.
+        if (!allUnsupportedFeatures.contains(CppRuleClasses.MEMPROF_OPTIMIZE)) {
+          allFeatures.add(CppRuleClasses.ENABLE_AUTOFDO_MEMPROF_OPTIMIZE);
+        }
         // Support implicit enabling of ThinLTO for AFDO unless it has been disabled.
         if (!allUnsupportedFeatures.contains(CppRuleClasses.THIN_LTO)) {
           allFeatures.add(CppRuleClasses.ENABLE_AFDO_THINLTO);
@@ -555,10 +534,6 @@ public final class CcCommon implements StarlarkValue {
 
     if (enablePropellerOptimize) {
       allRequestedFeaturesBuilder.add(CppRuleClasses.PROPELLER_OPTIMIZE);
-    }
-
-    if (cppConfiguration.getMemProfProfileLabel() != null) {
-      allRequestedFeaturesBuilder.add(CppRuleClasses.MEMPROF_OPTIMIZE);
     }
 
     for (String feature : allFeatures.build()) {
@@ -593,9 +568,9 @@ public final class CcCommon implements StarlarkValue {
    * Computes the appropriate value of the {@code $(CC_FLAGS)} Make variable based on the given
    * toolchain.
    */
-  public static String computeCcFlags(RuleContext ruleContext, TransitiveInfoCollection toolchain)
-      throws RuleErrorException, InterruptedException, EvalException {
-    CcToolchainProvider toolchainProvider = toolchain.get(CcToolchainProvider.PROVIDER);
+  public static String computeCcFlags(
+      RuleContext ruleContext, CcToolchainProvider toolchainProvider)
+      throws RuleErrorException, EvalException {
 
     // Determine the original value of CC_FLAGS.
     String originalCcFlags = toolchainProvider.getLegacyCcFlagsMakeVariable();
@@ -628,8 +603,7 @@ public final class CcCommon implements StarlarkValue {
   }
 
   private static List<String> computeCcFlagsFromFeatureConfig(
-      RuleContext ruleContext, CcToolchainProvider toolchainProvider)
-      throws RuleErrorException, InterruptedException {
+      RuleContext ruleContext, CcToolchainProvider toolchainProvider) throws RuleErrorException {
     FeatureConfiguration featureConfiguration = null;
     CppConfiguration cppConfiguration;
     cppConfiguration = ruleContext.getFragment(CppConfiguration.class);
@@ -646,14 +620,7 @@ public final class CcCommon implements StarlarkValue {
     }
     if (featureConfiguration.actionIsConfigured(CppActionNames.CC_FLAGS_MAKE_VARIABLE)) {
       try {
-        CcToolchainVariables buildVariables =
-            CcToolchainProvider.getBuildVars(
-                toolchainProvider,
-                ruleContext.getStarlarkThread(),
-                cppConfiguration,
-                ruleContext.getConfiguration().getOptions(),
-                ruleContext.getConfiguration().getOptions().get(CoreOptions.class).cpu,
-                toolchainProvider.getBuildVarsFunc());
+        CcToolchainVariables buildVariables = toolchainProvider.getBuildVars();
       return CppHelper.getCommandLine(
           ruleContext, featureConfiguration, buildVariables, CppActionNames.CC_FLAGS_MAKE_VARIABLE);
 

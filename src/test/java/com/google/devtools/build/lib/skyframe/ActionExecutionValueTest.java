@@ -13,7 +13,6 @@
 // limitations under the License.
 package com.google.devtools.build.lib.skyframe;
 
-
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.testing.EqualsTester;
@@ -27,8 +26,8 @@ import com.google.devtools.build.lib.actions.Artifact.TreeFileArtifact;
 import com.google.devtools.build.lib.actions.ArtifactRoot;
 import com.google.devtools.build.lib.actions.ArtifactRoot.RootType;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
-import com.google.devtools.build.lib.actions.FileArtifactValue.RemoteFileArtifactValue;
 import com.google.devtools.build.lib.actions.FilesetOutputSymlink;
+import com.google.devtools.build.lib.actions.FilesetOutputTree;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
@@ -46,17 +45,11 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public final class ActionExecutionValueTest {
   private static final FileArtifactValue VALUE_1_REMOTE =
-      RemoteFileArtifactValue.create(
-          /* digest= */ new byte[0],
-          /* size= */ 0,
-          /* locationIndex= */ 1,
-          /* expireAtEpochMilli= */ -1);
+      FileArtifactValue.createForRemoteFile(
+          /* digest= */ new byte[0], /* size= */ 0, /* locationIndex= */ 1);
   private static final FileArtifactValue VALUE_2_REMOTE =
-      RemoteFileArtifactValue.create(
-          /* digest= */ new byte[0],
-          /* size= */ 0,
-          /* locationIndex= */ 2,
-          /* expireAtEpochMilli= */ -1);
+      FileArtifactValue.createForRemoteFile(
+          /* digest= */ new byte[0], /* size= */ 0, /* locationIndex= */ 2);
 
   private static final ActionLookupKey KEY = ActionsTestUtil.NULL_ARTIFACT_OWNER;
   private static final ActionLookupData ACTION_LOOKUP_DATA_1 = ActionLookupData.create(KEY, 1);
@@ -108,10 +101,14 @@ public final class ActionExecutionValueTest {
         .addEqualityGroup(ImmutableMap.of(tree1, tree1Value1))
         .addEqualityGroup(ImmutableMap.of(tree1, tree1Value2))
         // outputSymlinks
-        .addEqualityGroup(createWithOutputSymlinks(ImmutableList.of(symlink1)))
-        .addEqualityGroup(createWithOutputSymlinks(ImmutableList.of(symlink2)))
-        .addEqualityGroup(createWithOutputSymlinks(ImmutableList.of(symlink1, symlink2)))
-        .addEqualityGroup(createWithOutputSymlinks(ImmutableList.of(symlink2, symlink1)))
+        .addEqualityGroup(
+            createWithFilesetOutput(FilesetOutputTree.create(ImmutableList.of(symlink1))))
+        .addEqualityGroup(
+            createWithFilesetOutput(FilesetOutputTree.create(ImmutableList.of(symlink2))))
+        .addEqualityGroup(
+            createWithFilesetOutput(FilesetOutputTree.create(ImmutableList.of(symlink1, symlink2))))
+        .addEqualityGroup(
+            createWithFilesetOutput(FilesetOutputTree.create(ImmutableList.of(symlink2, symlink1))))
         // discoveredModules
         .addEqualityGroup(
             createWithDiscoveredModules(
@@ -142,12 +139,13 @@ public final class ActionExecutionValueTest {
             // Single output file
             createWithArtifactData(ImmutableMap.of(output("output1"), VALUE_1_REMOTE)),
             // Fileset
-            createWithOutputSymlinks(
-                ImmutableList.of(
-                    FilesetOutputSymlink.createForTesting(
-                        PathFragment.create("name"),
-                        PathFragment.create("target"),
-                        PathFragment.create("execPath")))),
+            createWithFilesetOutput(
+                FilesetOutputTree.create(
+                    ImmutableList.of(
+                        FilesetOutputSymlink.createForTesting(
+                            PathFragment.create("name"),
+                            PathFragment.create("target"),
+                            PathFragment.create("execPath"))))),
             // Module discovering
             createWithDiscoveredModules(
                 NestedSetBuilder.create(Order.STABLE_ORDER, output("module"))),
@@ -168,7 +166,7 @@ public final class ActionExecutionValueTest {
             ActionExecutionValue.createFromOutputMetadataStore(
                 ImmutableMap.of(output("file"), VALUE_1_REMOTE),
                 ImmutableMap.of(tree("tree"), TreeArtifactValue.empty()),
-                /* outputSymlinks= */ ImmutableList.of(),
+                FilesetOutputTree.EMPTY,
                 /* discoveredModules= */ NestedSetBuilder.emptySet(Order.STABLE_ORDER)))
         .addDependency(FileSystem.class, OUTPUT_ROOT.getRoot().getFileSystem())
         .addDependency(
@@ -182,7 +180,7 @@ public final class ActionExecutionValueTest {
     return ActionExecutionValue.createFromOutputMetadataStore(
         /* artifactData= */ artifactData,
         /* treeArtifactData= */ ImmutableMap.of(),
-        /* outputSymlinks= */ ImmutableList.of(),
+        FilesetOutputTree.EMPTY,
         /* discoveredModules= */ NestedSetBuilder.emptySet(Order.STABLE_ORDER));
   }
 
@@ -191,16 +189,15 @@ public final class ActionExecutionValueTest {
     return ActionExecutionValue.createFromOutputMetadataStore(
         /* artifactData= */ ImmutableMap.of(),
         treeArtifactData,
-        /* outputSymlinks= */ ImmutableList.of(),
+        FilesetOutputTree.EMPTY,
         /* discoveredModules= */ NestedSetBuilder.emptySet(Order.STABLE_ORDER));
   }
 
-  private static ActionExecutionValue createWithOutputSymlinks(
-      ImmutableList<FilesetOutputSymlink> outputSymlinks) {
+  private static ActionExecutionValue createWithFilesetOutput(FilesetOutputTree filesetOutput) {
     return ActionExecutionValue.createFromOutputMetadataStore(
         ImmutableMap.of(output("fileset.manifest"), VALUE_1_REMOTE),
         /* treeArtifactData= */ ImmutableMap.of(),
-        outputSymlinks,
+        filesetOutput,
         /* discoveredModules= */ NestedSetBuilder.emptySet(Order.STABLE_ORDER));
   }
 
@@ -214,7 +211,7 @@ public final class ActionExecutionValueTest {
     return ActionExecutionValue.createFromOutputMetadataStore(
         /* artifactData= */ ImmutableMap.of(output("modules.pcm"), VALUE_1_REMOTE),
         /* treeArtifactData= */ ImmutableMap.of(),
-        /* outputSymlinks= */ ImmutableList.of(),
+        FilesetOutputTree.EMPTY,
         discoveredModules);
   }
 

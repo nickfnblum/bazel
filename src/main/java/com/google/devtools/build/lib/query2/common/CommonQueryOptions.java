@@ -203,6 +203,10 @@ public class CommonQueryOptions extends OptionsBase {
         : LabelPrinter.displayForm(mainRepoMapping);
   }
 
+  public LabelPrinter getLabelPrinterLegacy(StarlarkSemantics starlarkSemantics) {
+    return emitConsistentLabels ? LabelPrinter.starlark(starlarkSemantics) : LabelPrinter.LEGACY;
+  }
+
   ///////////////////////////////////////////////////////////
   // PROTO OUTPUT FORMATTER OPTIONS                        //
   ///////////////////////////////////////////////////////////
@@ -297,6 +301,17 @@ public class CommonQueryOptions extends OptionsBase {
   public boolean protoIncludeDefinitionStack;
 
   @Option(
+      name = "proto:include_starlark_rule_env",
+      defaultValue = "true",
+      documentationCategory = OptionDocumentationCategory.QUERY,
+      effectTags = {OptionEffectTag.TERMINAL_OUTPUT},
+      help =
+          "Use the starlark environment in the value of the generated $internal_attr_hash"
+              + " attribute. This ensures that the starlark rule definition (and its transitive"
+              + " imports) are part of this identifier.")
+  public boolean protoIncludeStarlarkRuleEnv;
+
+  @Option(
       name = "proto:include_attribute_source_aspects",
       defaultValue = "false",
       documentationCategory = OptionDocumentationCategory.QUERY,
@@ -305,6 +320,18 @@ public class CommonQueryOptions extends OptionsBase {
           "Populate the source_aspect_name proto field of each Attribute with the source aspect "
               + "that the attribute came from (empty string if it did not).")
   public boolean protoIncludeAttributeSourceAspects;
+
+  @Option(
+      name = "proto:rule_classes",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.QUERY,
+      effectTags = {OptionEffectTag.TERMINAL_OUTPUT},
+      help =
+          "Populate the rule_class_key field of each rule; and for the first rule with a given"
+              + " rule_class_key, also populate its rule_class_info proto field. The rule_class_key"
+              + " field uniquely identifies a rule class, and the rule_class_info field is a"
+              + " Stardoc-format rule class API definition.")
+  public boolean protoRuleClasses;
 
   /** An enum converter for {@code AspectResolver.Mode} . Should be used internally only. */
   public static class AspectResolutionModeConverter extends EnumConverter<Mode> {
@@ -357,6 +384,10 @@ public class CommonQueryOptions extends OptionsBase {
               + "applicable to --output=graph.")
   public boolean graphFactored;
 
+  ///////////////////////////////////////////////////////////
+  // INPUT / OUTPUT OPTIONS                                //
+  ///////////////////////////////////////////////////////////
+
   @Option(
       name = "query_file",
       defaultValue = "",
@@ -366,4 +397,15 @@ public class CommonQueryOptions extends OptionsBase {
           "If set, query will read the query from the file named here, rather than on the command "
               + "line. It is an error to specify a file here as well as a command-line query.")
   public String queryFile;
+
+  @Option(
+      name = "output_file",
+      defaultValue = "",
+      documentationCategory = OptionDocumentationCategory.QUERY,
+      effectTags = {OptionEffectTag.TERMINAL_OUTPUT},
+      help =
+          "When specified, query results will be written directly to this file, and nothing will be"
+              + " printed to Bazel's standard output stream (stdout). In benchmarks, this is"
+              + " generally faster than <code>bazel query &gt; file</code>.")
+  public String outputFile;
 }

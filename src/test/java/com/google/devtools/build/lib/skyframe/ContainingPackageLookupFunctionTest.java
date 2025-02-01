@@ -20,14 +20,12 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.testing.EqualsTester;
-import com.google.devtools.build.lib.actions.FileValue;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.analysis.ServerDirectories;
 import com.google.devtools.build.lib.analysis.util.AnalysisMock;
 import com.google.devtools.build.lib.bazel.bzlmod.BzlmodRepoRuleValue;
 import com.google.devtools.build.lib.clock.BlazeClock;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
-import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.events.NullEventHandler;
 import com.google.devtools.build.lib.io.FileSymlinkCycleUniquenessFunction;
 import com.google.devtools.build.lib.packages.RuleClassProvider;
@@ -110,17 +108,14 @@ public class ContainingPackageLookupFunctionTest extends FoundationTestCase {
             BazelSkyframeExecutorConstants.BUILD_FILES_BY_PRIORITY,
             BazelSkyframeExecutorConstants.EXTERNAL_PACKAGE_HELPER));
     skyFunctions.put(SkyFunctions.PACKAGE, PackageFunction.newBuilder().build());
-    skyFunctions.put(
-        SkyFunctions.IGNORED_PACKAGE_PREFIXES,
-        new IgnoredPackagePrefixesFunction(
-            /*ignoredPackagePrefixesFile=*/ PathFragment.EMPTY_FRAGMENT));
+    skyFunctions.put(SkyFunctions.IGNORED_SUBDIRECTORIES, IgnoredSubdirectoriesFunction.NOOP);
     skyFunctions.put(
         FileStateKey.FILE_STATE,
         new FileStateFunction(
             Suppliers.ofInstance(new TimestampGranularityMonitor(BlazeClock.instance())),
             SyscallCache.NO_CACHE,
             externalFilesHelper));
-    skyFunctions.put(FileValue.FILE, new FileFunction(pkgLocator, directories));
+    skyFunctions.put(SkyFunctions.FILE, new FileFunction(pkgLocator, directories));
     skyFunctions.put(SkyFunctions.DIRECTORY_LISTING, new DirectoryListingFunction());
     skyFunctions.put(
         SkyFunctions.DIRECTORY_LISTING_STATE,
@@ -176,9 +171,12 @@ public class ContainingPackageLookupFunctionTest extends FoundationTestCase {
     PrecomputedValue.BUILD_ID.set(differencer, UUID.randomUUID());
     PrecomputedValue.PATH_PACKAGE_LOCATOR.set(differencer, pkgLocator.get());
     PrecomputedValue.STARLARK_SEMANTICS.set(differencer, StarlarkSemantics.DEFAULT);
-    RepositoryDelegatorFunction.REPOSITORY_OVERRIDES.set(differencer, ImmutableMap.of());
+    RepositoryMappingFunction.REPOSITORY_OVERRIDES.set(differencer, ImmutableMap.of());
     RepositoryDelegatorFunction.FORCE_FETCH.set(
         differencer, RepositoryDelegatorFunction.FORCE_FETCH_DISABLED);
+    RepositoryDelegatorFunction.DISABLE_NATIVE_REPO_RULES.set(differencer, false);
+    RepositoryDelegatorFunction.VENDOR_DIRECTORY.set(differencer, Optional.empty());
+
     RepositoryDelegatorFunction.RESOLVED_FILE_INSTEAD_OF_WORKSPACE.set(
         differencer, Optional.empty());
   }
@@ -239,32 +237,6 @@ public class ContainingPackageLookupFunctionTest extends FoundationTestCase {
     assertThat(value.getContainingPackageName())
         .isEqualTo(PackageIdentifier.createInMainRepo("a/b"));
     assertThat(value.getContainingPackageRoot()).isEqualTo(Root.fromPath(rootDirectory));
-  }
-
-  @Test
-  public void testContainingPackageIsExternalRepositoryViaExternalRepository() throws Exception {
-    scratch.overwriteFile("WORKSPACE", "local_repository(name='a', path='a')");
-    scratch.file("a/WORKSPACE");
-    scratch.file("a/BUILD");
-    scratch.file("a/b/BUILD");
-    ContainingPackageLookupValue value =
-        lookupContainingPackage(
-            PackageIdentifier.create(RepositoryName.create("a"), PathFragment.create("b")));
-    assertThat(value.hasContainingPackage()).isTrue();
-    assertThat(value.getContainingPackageName())
-        .isEqualTo(PackageIdentifier.create(RepositoryName.create("a"), PathFragment.create("b")));
-  }
-
-  @Test
-  public void testContainingPackageIsExternalRepositoryViaLocalPath() throws Exception {
-    scratch.overwriteFile("WORKSPACE", "local_repository(name='a', path='a')");
-    scratch.file("a/WORKSPACE");
-    scratch.file("a/BUILD");
-    scratch.file("a/b/BUILD");
-    ContainingPackageLookupValue value = lookupContainingPackage("a/b");
-    assertThat(value.hasContainingPackage()).isTrue();
-    assertThat(value.getContainingPackageName())
-        .isEqualTo(PackageIdentifier.create(RepositoryName.create("a"), PathFragment.create("b")));
   }
 
   @Test

@@ -52,7 +52,7 @@ public abstract class AbstractBlackBoxTest {
           new JavaToolsSetup(),
           new CxxToolsSetup(),
           new CrossToolsSetup());
-  protected static final String WORKSPACE = "WORKSPACE";
+  protected static final String MODULE_DOT_BAZEL = "MODULE.bazel";
 
   @Rule public TestName testName = new TestName();
 
@@ -77,10 +77,6 @@ public abstract class AbstractBlackBoxTest {
   @Before
   public void setUp() throws Exception {
     prepareEnvironment(getAdditionalTools());
-  }
-
-  public void disableBzlmod() throws Exception {
-    PathUtils.append(context.getWorkDir().resolve(".bazelrc"), "common --noenable_bzlmod");
   }
 
   @After

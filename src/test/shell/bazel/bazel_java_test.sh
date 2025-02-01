@@ -50,38 +50,15 @@ msys*|mingw*|cygwin*)
   ;;
 esac
 
-if "$is_windows"; then
-  export MSYS_NO_PATHCONV=1
-  export MSYS2_ARG_CONV_EXCL="*"
-fi
-
 JAVA_TOOLCHAIN="@bazel_tools//tools/jdk:toolchain"
 
 JAVA_TOOLCHAIN_TYPE="@bazel_tools//tools/jdk:toolchain_type"
 
 RULES_JAVA_REPO_NAME=$(cat "$(rlocation io_bazel/src/test/shell/bazel/RULES_JAVA_REPO_NAME)")
-JAVA_TOOLS_REPO_PREFIX="${RULES_JAVA_REPO_NAME}~toolchains~"
-
 JAVA_TOOLS_ZIP="$1"; shift
-if [[ "${JAVA_TOOLS_ZIP}" != "released" ]]; then
-  JAVA_TOOLS_ZIP_FILE="$(rlocation "${JAVA_TOOLS_ZIP}")"
-  JAVA_TOOLS_DIR="$TEST_TMPDIR/_java_tools"
-  unzip -q "${JAVA_TOOLS_ZIP_FILE}" -d "$JAVA_TOOLS_DIR"
-  touch "$JAVA_TOOLS_DIR/WORKSPACE"
-  add_to_bazelrc "build --override_repository=${JAVA_TOOLS_REPO_PREFIX}remote_java_tools=${JAVA_TOOLS_DIR}"
-fi
-
 JAVA_TOOLS_PREBUILT_ZIP="$1"; shift
-if [[ "${JAVA_TOOLS_PREBUILT_ZIP}" != "released" ]]; then
-  JAVA_TOOLS_PREBUILT_ZIP_FILE="$(rlocation "${JAVA_TOOLS_PREBUILT_ZIP}")"
-  JAVA_TOOLS_PREBUILT_DIR="$TEST_TMPDIR/_java_tools_prebuilt"
-  unzip -q "${JAVA_TOOLS_PREBUILT_ZIP_FILE}" -d "$JAVA_TOOLS_PREBUILT_DIR"
-  touch "$JAVA_TOOLS_PREBUILT_DIR/WORKSPACE"
-  add_to_bazelrc "build --override_repository=${JAVA_TOOLS_REPO_PREFIX}remote_java_tools_linux=${JAVA_TOOLS_PREBUILT_DIR}"
-  add_to_bazelrc "build --override_repository=${JAVA_TOOLS_REPO_PREFIX}remote_java_tools_windows=${JAVA_TOOLS_PREBUILT_DIR}"
-  add_to_bazelrc "build --override_repository=${JAVA_TOOLS_REPO_PREFIX}remote_java_tools_darwin_x86_64=${JAVA_TOOLS_PREBUILT_DIR}"
-  add_to_bazelrc "build --override_repository=${JAVA_TOOLS_REPO_PREFIX}remote_java_tools_darwin_arm64=${JAVA_TOOLS_PREBUILT_DIR}"
-fi
+
+override_java_tools "${RULES_JAVA_REPO_NAME}" "${JAVA_TOOLS_ZIP}" "${JAVA_TOOLS_PREBUILT_ZIP}"
 
 if [[ $# -gt 0 ]]; then
   JAVA_LANGUAGE_VERSION="$1"; shift
@@ -106,7 +83,12 @@ fi
 export TESTENV_DONT_BAZEL_CLEAN=1
 
 function tear_down() {
+  bazel shutdown
   rm -rf "$(bazel info bazel-bin)/java"
+}
+
+function set_up() {
+  add_rules_java MODULE.bazel
 }
 
 function write_hello_library_files() {
@@ -251,6 +233,7 @@ EOF
 
 function write_java_custom_rule() {
   cat > java/com/google/sandwich/java_custom_library.bzl << EOF
+load("@rules_java//java/common:java_common.bzl", "java_common")
 def _impl(ctx):
   deps = [dep[java_common.provider] for dep in ctx.attr.deps]
   exports = [export[java_common.provider] for export in ctx.attr.exports]
@@ -267,10 +250,10 @@ def _impl(ctx):
     strict_deps = "ERROR",
     java_toolchain = ctx.attr._java_toolchain[java_common.JavaToolchainInfo],
   )
-  return struct(
-    files = depset([output_jar]),
-    providers = [compilation_provider]
-  )
+  return [
+    DefaultInfo(files = depset([output_jar])),
+    compilation_provider,
+  ]
 
 java_custom_library = rule(
   implementation = _impl,
@@ -436,6 +419,7 @@ java_custom_library(
 EOF
 
   cat >g/java_custom_library.bzl << EOF
+load("@rules_java//java/common:java_common.bzl", "java_common")
 def _impl(ctx):
   output_jar = ctx.actions.declare_file("lib" + ctx.label.name + ".jar")
 
@@ -448,10 +432,10 @@ def _impl(ctx):
     strict_deps = "ERROR",
     java_toolchain = ctx.attr._java_toolchain[java_common.JavaToolchainInfo],
   )
-  return struct(
-    files = depset([output_jar]),
-    providers = [compilation_provider]
-  )
+  return [
+    DefaultInfo(files = depset([output_jar])),
+    compilation_provider
+  ]
 
 java_custom_library = rule(
   implementation = _impl,
@@ -506,6 +490,7 @@ java_custom_library(
 EOF
 
   cat >g/java_custom_library.bzl << EOF
+load("@rules_java//java/common:java_common.bzl", "java_common")
 def _impl(ctx):
   output_jar = ctx.actions.declare_file("lib" + ctx.label.name + ".jar")
 
@@ -519,10 +504,10 @@ def _impl(ctx):
     strict_deps = "ERROR",
     java_toolchain = ctx.attr._java_toolchain[java_common.JavaToolchainInfo],
   )
-  return struct(
-    files = depset([output_jar]),
-    providers = [compilation_provider]
-  )
+  return [
+    DefaultInfo(files = depset([output_jar])),
+    compilation_provider,
+  ]
 
 java_custom_library = rule(
   implementation = _impl,
@@ -1409,6 +1394,8 @@ class A {
 EOF
 
   cat > java/com/google/sandwich/java_custom_library.bzl << EOF
+load("@rules_java//java/common:java_common.bzl", "java_common")
+load("@rules_java//java/common:java_info.bzl", "JavaInfo")
 def _impl(ctx):
   compiled_jar = ctx.actions.declare_file("lib" + ctx.label.name + ".jar")
   imported_jar = ctx.files.jar[0];
@@ -1427,10 +1414,10 @@ def _impl(ctx):
   print(final_provider.outputs.jars[0].class_jar)
   print(final_provider.outputs.jars[1].class_jar)
 
-  return struct(
-    files = depset([compiled_jar, imported_jar]),
-    providers = [final_provider]
-  )
+  return [
+    DefaultInfo(files = depset([compiled_jar, imported_jar])),
+    final_provider,
+  ]
 
 java_custom_library = rule(
   implementation = _impl,
@@ -1463,6 +1450,8 @@ my_rule(
 EOF
 
   cat > java/com/google/foo/my_rule.bzl << EOF
+load("@rules_java//java/common:java_common.bzl", "java_common")
+load("@rules_java//java/common:java_info.bzl", "JavaInfo")
 result = provider()
 def _impl(ctx):
   compile_jar = java_common.run_ijar(
@@ -1576,6 +1565,7 @@ EOF
   chmod +x "${pkg}"/run.sh
 
   bazel test //"${pkg}":bar --test_output=all --verbose_failures >& "$TEST_log" \
+      --legacy_external_runfiles \
       || fail "Expected success"
 }
 
@@ -1583,13 +1573,69 @@ EOF
 # Build and run a java_binary that calls a C++ function through JNI.
 # This test exercises the built-in @bazel_tools//tools/jdk:jni target.
 #
-# The java_binary wrapper script specifies -Djava.library.path=$runfiles/test,
+# The java_binary wrapper script specifies -Djava.library.path=$runfiles/jni,
 # and the Java program expects to find a DSO there---except on MS Windows,
 # which lacks support for symbolic links. Really there needs to
 # be a cleaner mechanism for finding and loading the JNI library (and better
 # hygiene around the library namespace). By contrast, Blaze links all the
 # native code and the JVM into a single executable, which is an elegant solution.
 #
+function setup_jni_targets() {
+  repo="${1:-.}"
+  if [ "$repo" != "." ]; then
+    mkdir $repo
+    touch $repo/REPO.bazel
+    cat > $(setup_module_dot_bazel) <<EOF
+local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "local_repository")
+local_repository(
+  name="$repo",
+  path="./$repo",
+)
+EOF
+  fi
+  mkdir -p ${repo}/jni
+  cat > $repo/jni/BUILD <<EOF
+java_library(
+  name = "lib",
+  srcs = ["App.java"],
+  deps = [":libnative.so"],
+  visibility = ["//visibility:public"],
+)
+cc_binary(
+  name = "libnative.so",
+  srcs = ["native.cc"],
+  linkshared = 1,
+  deps = ["@bazel_tools//tools/jdk:jni"],
+)
+EOF
+  cat > ${repo}/jni/App.java <<'EOF'
+package foo;
+
+public class App {
+  static { System.loadLibrary("native"); }
+  public static void main(String[] args) { f(123); }
+  private static native void f(int x);
+}
+EOF
+  cat > ${repo}/jni/native.cc <<'EOF'
+#include <jni.h>
+#include <stdio.h>
+
+extern "C" JNIEXPORT void JNICALL Java_foo_App_f(JNIEnv *env, jclass clazz, jint x) {
+  printf("hello %d\n", x);
+}
+EOF
+
+  mkdir -p test/
+  cat > test/BUILD <<EOF
+java_binary(
+  name = "app",
+  main_class = 'foo.App',
+  runtime_deps = ["@$1//jni:lib"],
+)
+EOF
+}
+
 function test_jni() {
   # Skip on MS Windows, as Bazel does not create a runfiles symlink tree.
   # (MSYS_NT is the system name reported by MinGW uname.)
@@ -1601,40 +1647,39 @@ function test_jni() {
   # TODO(adonovan): make this just work.
   uname -s | grep -q Darwin && return
 
-  mkdir -p test/
-  cat > test/BUILD <<'EOF'
-java_binary(
-  name = "app",
-  srcs = ["App.java"],
-  main_class = 'foo.App',
-  data = [":libnative.so"],
-  jvm_flags = ["-Djava.library.path=test"],
-)
-cc_binary(
-  name = "libnative.so",
-  srcs = ["native.cc"],
-  linkshared = 1,
-  deps = ["@bazel_tools//tools/jdk:jni"],
-)
-EOF
-  cat > test/App.java <<'EOF'
-package foo;
+  setup_jni_targets ""
 
-public class App {
-  static { System.loadLibrary("native"); }
-  public static void main(String[] args) { f(123); }
-  private static native void f(int x);
+  bazel run //test:app >> $TEST_log || {
+    find bazel-bin/ | native # helpful for debugging
+    fail "bazel run command failed"
+  }
+  expect_log "hello 123"
 }
-EOF
-  cat > test/native.cc <<'EOF'
-#include <jni.h>
-#include <stdio.h>
 
-extern "C" JNIEXPORT void JNICALL Java_foo_App_f(JNIEnv *env, jclass clazz, jint x) {
-  printf("hello %d\n", x);
+function test_jni_external_repo_legacy_external_runfiles() {
+  # Skip on MS Windows, see details in test_jni
+  uname -s | grep -q MSYS_NT && return
+  # Skip on Darwin, see details in test_jni
+  uname -s | grep -q Darwin && return
+
+  setup_jni_targets "my_other_repo"
+
+  bazel run --legacy_external_runfiles //test:app >> $TEST_log || {
+    find bazel-bin/ | native # helpful for debugging
+    fail "bazel run command failed"
+  }
+  expect_log "hello 123"
 }
-EOF
-  bazel run //test:app > $TEST_log || {
+
+function test_jni_external_repo_no_legacy_external_runfiles() {
+  # Skip on MS Windows, see details in test_jni
+  uname -s | grep -q MSYS_NT && return
+  # Skip on Darwin, see details in test_jni
+  uname -s | grep -q Darwin && return
+
+  setup_jni_targets "my_other_repo"
+
+  bazel run --nolegacy_external_runfiles //test:app >> $TEST_log || {
     find bazel-bin/ | native # helpful for debugging
     fail "bazel run command failed"
   }
@@ -1742,7 +1787,8 @@ EOF
 }
 
 function test_auto_bazel_repository() {
-  cat >> WORKSPACE <<'EOF'
+  cat >> MODULE.bazel <<'EOF'
+local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "local_repository")
 local_repository(
   name = "other_repo",
   path = "other_repo",
@@ -1754,7 +1800,7 @@ EOF
 java_library(
   name = "library",
   srcs = ["Library.java"],
-  deps = ["@bazel_tools//tools/java/runfiles"],
+  deps = ["@rules_java//java/runfiles"],
   visibility = ["//visibility:public"],
 )
 
@@ -1764,7 +1810,7 @@ java_binary(
   main_class = "com.example.Binary",
   deps = [
     ":library",
-    "@bazel_tools//tools/java/runfiles",
+    "@rules_java//java/runfiles",
   ],
 )
 
@@ -1775,7 +1821,7 @@ java_test(
   use_testrunner = False,
   deps = [
     ":library",
-    "@bazel_tools//tools/java/runfiles",
+    "@rules_java//java/runfiles",
   ],
 )
 EOF
@@ -1830,14 +1876,14 @@ public class Test {
 EOF
 
   mkdir -p other_repo
-  touch other_repo/WORKSPACE
+  touch other_repo/REPO.bazel
 
   mkdir -p other_repo/pkg
   cat > other_repo/pkg/BUILD.bazel <<'EOF'
 java_library(
   name = "library2",
   srcs = ["Library2.java"],
-  deps = ["@bazel_tools//tools/java/runfiles"],
+  deps = ["@rules_java//java/runfiles"],
 )
 
 java_binary(
@@ -1847,7 +1893,7 @@ java_binary(
   deps = [
     ":library2",
     "@//pkg:library",
-    "@bazel_tools//tools/java/runfiles",
+    "@rules_java//java/runfiles",
   ],
 )
 java_test(
@@ -1858,7 +1904,7 @@ java_test(
   deps = [
     ":library2",
     "@//pkg:library",
-    "@bazel_tools//tools/java/runfiles",
+    "@rules_java//java/runfiles",
   ],
 )
 EOF
@@ -1916,14 +1962,14 @@ EOF
   expect_log "in pkg/Library.java: ''"
 
   bazel run @other_repo//pkg:binary &>"$TEST_log" || fail "Run should succeed"
-  expect_log "in external/other_repo/pkg/Binary.java: 'other_repo'"
-  expect_log "in external/other_repo/pkg/Library2.java: 'other_repo'"
+  expect_log "in external/other_repo/pkg/Binary.java: '+_repo_rules+other_repo'"
+  expect_log "in external/other_repo/pkg/Library2.java: '+_repo_rules+other_repo'"
   expect_log "in pkg/Library.java: ''"
 
   bazel test --test_output=streamed \
     @other_repo//pkg:test &>"$TEST_log" || fail "Test should succeed"
-  expect_log "in external/other_repo/pkg/Test.java: 'other_repo'"
-  expect_log "in external/other_repo/pkg/Library2.java: 'other_repo'"
+  expect_log "in external/other_repo/pkg/Test.java: '+_repo_rules+other_repo'"
+  expect_log "in external/other_repo/pkg/Library2.java: '+_repo_rules+other_repo'"
   expect_log "in pkg/Library.java: ''"
 }
 
@@ -1941,6 +1987,388 @@ public class B {}
 EOF
 
   bazel build //pkg:a >& $TEST_log || fail "build failed"
+}
+
+function test_header_compiler_direct_supports_unicode() {
+  if [[ "${JAVA_TOOLS_ZIP}" == released ]]; then
+      # TODO: Enable test after the next java_tools release.
+      return 0
+  fi
+
+  if "$is_windows"; then
+    # GraalVM native images on Windows use the same active code page they have been built
+    # with, which in the case of Bazel CI is 1252 (not UTF-8). Even with -H:+AddAllCharsets
+    # InvalidPathExceptions are still thrown when accessing a Unicode file path, indicating a
+    # problem within GraalVM's path encoding handling.
+    # https://github.com/oracle/graal/issues/10237
+    # TODO: Fix this by building java_tools binaries on a machine with system code page set to
+    #  UTF-8.
+    echo "Skipping test on Windows"
+    return 0
+  elif [[ "$(uname -s)" == "Linux" ]]; then
+    export LC_ALL=C.UTF-8
+    if [[ $(locale charmap) != "UTF-8" ]]; then
+      echo "Skipping test due to missing UTF-8 locale"
+      return 0
+    fi
+    local -r unicode="äöüÄÖÜß🌱"
+  else
+    # JVMs on macOS always support UTF-8 since JEP 400.
+    local -r unicode="äöüÄÖÜß🌱"
+  fi
+  mkdir -p pkg
+  cat << EOF > pkg/BUILD
+java_library(name = "a", srcs = ["A.java"], deps = [":b"])
+java_library(name = "b", srcs = ["${unicode}.java"])
+EOF
+  cat << 'EOF' > pkg/A.java
+public class A extends B {}
+EOF
+  cat << 'EOF' > "pkg/${unicode}.java"
+class B {}
+EOF
+
+  bazel build //pkg:a //pkg:b >& $TEST_log || fail "build failed"
+}
+
+function test_sandboxed_multiplexing() {
+  mkdir -p pkg
+  cat << 'EOF' > pkg/BUILD
+load("@bazel_tools//tools/jdk:default_java_toolchain.bzl", "default_java_toolchain")
+default_java_toolchain(
+    name = "java_toolchain",
+    source_version = "17",
+    target_version = "17",
+    javac_supports_worker_multiplex_sandboxing = True,
+)
+java_library(name = "a", srcs = ["A.java"], deps = [":b"])
+java_library(name = "b", srcs = ["B.java"])
+EOF
+  cat << 'EOF' > pkg/A.java
+public class A extends B {}
+EOF
+  cat << 'EOF' > pkg/B.java
+public class B {}
+EOF
+
+  bazel build //pkg:a \
+    --experimental_worker_multiplex_sandboxing \
+    --java_language_version=17 \
+    --extra_toolchains=//pkg:java_toolchain_definition \
+    >& $TEST_log || fail "build failed"
+}
+
+function test_sandboxed_multiplexing_hermetic_paths_in_diagnostics() {
+  mkdir -p pkg
+  cat << 'EOF' > pkg/BUILD
+load("@bazel_tools//tools/jdk:default_java_toolchain.bzl", "default_java_toolchain")
+default_java_toolchain(
+    name = "java_toolchain",
+    source_version = "17",
+    target_version = "17",
+    javac_supports_worker_multiplex_sandboxing = True,
+)
+java_library(name = "lib", srcs = ["Lib.java"])
+EOF
+  cat << 'EOF' > pkg/Lib.java
+public class Lib {
+  public static void foo() {
+    String a = 5; // __sandbox/1/_main/pkg/Lib.java:3: error: incompatible types: int cannot be converted to String
+  }
+}
+EOF
+
+  bazel build //pkg:lib \
+    --experimental_worker_multiplex_sandboxing \
+    --java_language_version=17 \
+    --extra_toolchains=//pkg:java_toolchain_definition \
+    >& $TEST_log && fail "build succeeded"
+  # Verify that the working directory is only stripped from source file paths.
+  expect_log "^pkg[\\/]Lib.java:3: error:"
+  expect_log "^    String a = 5; // __sandbox/1/_main/pkg/Lib.java:3: error: incompatible types: int cannot be converted to String"
+}
+
+function test_strict_deps_error_external_repo_starlark_action() {
+  cat << 'EOF' > MODULE.bazel
+bazel_dep(
+    name = "lib_c",
+    repo_name = "c",
+)
+local_path_override(
+    module_name = "lib_c",
+    path = "lib_c",
+)
+EOF
+
+  mkdir -p pkg
+  cat << 'EOF' > pkg/BUILD
+java_library(name = "a", srcs = ["A.java"], deps = [":b"])
+java_library(name = "b", srcs = ["B.java"], deps = ["@c"])
+EOF
+  cat << 'EOF' > pkg/A.java
+public class A extends B implements C {}
+EOF
+  cat << 'EOF' > pkg/B.java
+public class B implements C {}
+EOF
+
+  mkdir -p lib_c
+  cat << 'EOF' > lib_c/MODULE.bazel
+module(name = "lib_c")
+EOF
+  cat << 'EOF' > lib_c/BUILD
+java_library(name = "c_pregen", srcs = ["C.java"])
+java_import(name = "c", jars = ["libc_pregen.jar"], visibility = ["//visibility:public"])
+EOF
+  cat << 'EOF' > lib_c/C.java
+public interface C {}
+EOF
+
+  bazel build //pkg:a >& $TEST_log && fail "build should fail"
+  expect_log "buildozer 'add deps @c//:c' //pkg:a"
+}
+
+function test_strict_deps_error_external_repo_header_compile_action() {
+  cat << 'EOF' > MODULE.bazel
+bazel_dep(
+    name = "lib_c",
+    repo_name = "c",
+)
+local_path_override(
+    module_name = "lib_c",
+    path = "lib_c",
+)
+EOF
+
+  mkdir -p pkg
+  cat << 'EOF' > pkg/BUILD
+java_binary(name = "Main", srcs = ["Main.java"], deps = [":a"])
+java_library(name = "a", srcs = ["A.java"], deps = [":b"])
+java_library(name = "b", srcs = ["B.java"], deps = ["@c"])
+EOF
+  cat << 'EOF' > pkg/Main.java
+public class Main extends A {}
+EOF
+  cat << 'EOF' > pkg/A.java
+public class A extends B implements C {}
+EOF
+  cat << 'EOF' > pkg/B.java
+public class B implements C {}
+EOF
+
+  mkdir -p lib_c
+  cat << 'EOF' > lib_c/MODULE.bazel
+module(name = "lib_c")
+EOF
+  cat << 'EOF' > lib_c/BUILD
+java_library(name = "c", srcs = ["C.java"], visibility = ["//visibility:public"])
+EOF
+  cat << 'EOF' > lib_c/C.java
+public interface C {}
+EOF
+
+  bazel build //pkg:a >& $TEST_log && fail "build should fail"
+  expect_log "buildozer 'add deps @c//:c' //pkg:a"
+}
+
+function test_strict_deps_error_external_repo_compile_action() {
+  cat << 'EOF' > MODULE.bazel
+bazel_dep(
+    name = "lib_c",
+    repo_name = "c",
+)
+local_path_override(
+    module_name = "lib_c",
+    path = "lib_c",
+)
+EOF
+
+  mkdir -p pkg
+  cat << 'EOF' > pkg/BUILD
+java_library(name = "a", srcs = ["A.java"], deps = [":b"])
+java_library(name = "b", srcs = ["B.java"], deps = ["@c"])
+EOF
+  cat << 'EOF' > pkg/A.java
+public class A extends B {
+  boolean foo() {
+    return this instanceof C;
+  }
+}
+EOF
+  cat << 'EOF' > pkg/B.java
+public class B implements C {}
+EOF
+
+  mkdir -p lib_c
+  cat << 'EOF' > lib_c/MODULE.bazel
+module(name = "lib_c")
+EOF
+  cat << 'EOF' > lib_c/BUILD
+java_library(name = "c", srcs = ["C.java"], visibility = ["//visibility:public"])
+EOF
+  cat << 'EOF' > lib_c/C.java
+public interface C {}
+EOF
+
+  bazel build //pkg:a >& $TEST_log && fail "build should fail"
+  expect_log "buildozer 'add deps @c//:c' //pkg:a"
+}
+
+function test_one_version() {
+  mkdir -p pkg
+  cat << 'EOF' > pkg/BUILD
+java_binary(
+    name = "a",
+    srcs = ["A.java"],
+    main_class = "A",
+    deps = [
+        "//pkg/b1",
+        "//pkg/b2",
+    ]
+)
+EOF
+  cat << 'EOF' > pkg/A.java
+public class A extends B {
+  public static void main(String[] args) {
+    System.err.println("Hello, two worlds!");
+  }
+}
+EOF
+  mkdir -p pkg/b1
+  cat << 'EOF' > pkg/b1/BUILD
+java_library(
+    name = "b1",
+    srcs = ["B.java"],
+    visibility = ["//visibility:public"],
+)
+EOF
+  cat << 'EOF' > pkg/b1/B.java
+public class B {
+  public void foo() {}
+}
+EOF
+  mkdir -p pkg/b2
+  cat << 'EOF' > pkg/b2/BUILD
+java_library(
+    name = "b2",
+    srcs = ["B.java"],
+    visibility = ["//visibility:public"],
+)
+EOF
+  cat << 'EOF' > pkg/b2/B.java
+public class B {
+  public void bar() {}
+}
+EOF
+
+  bazel build //pkg:a --experimental_one_version_enforcement=error \
+    >& $TEST_log && fail "build should have failed"
+  expect_log "Found one definition violations on the runtime classpath:"
+  expect_log "B has incompatible definitions in:"
+  expect_log " //pkg/b1:b1"
+  expect_log " //pkg/b2:b2"
+}
+
+function test_one_version_allowlist() {
+  mkdir -p pkg
+  cat << 'EOF' > pkg/BUILD
+load("@bazel_tools//tools/jdk:default_java_toolchain.bzl", "default_java_toolchain")
+
+default_java_toolchain(
+    name = "java_toolchain",
+    source_version = "17",
+    target_version = "17",
+    oneversion_allowlist = "//pkg:allowlist",
+)
+
+java_binary(
+    name = "a",
+    srcs = ["A.java"],
+    main_class = "A",
+    deps = [
+        "//pkg/b1",
+        "//pkg/b2",
+    ]
+)
+EOF
+  touch pkg/allowlist
+  cat << 'EOF' > pkg/A.java
+package com.example;
+
+public class A extends B {
+  public static void main(String[] args) {
+    System.err.println("Hello, two worlds!");
+  }
+}
+EOF
+  mkdir -p pkg/b1
+  cat << 'EOF' > pkg/b1/BUILD
+java_library(
+    name = "b1",
+    srcs = ["B.java"],
+    visibility = ["//visibility:public"],
+)
+EOF
+  cat << 'EOF' > pkg/b1/B.java
+package com.example;
+
+public class B {
+  public void foo() {}
+}
+EOF
+  mkdir -p pkg/b2
+  cat << 'EOF' > pkg/b2/BUILD
+java_library(
+    name = "b2",
+    srcs = ["B.java"],
+    visibility = ["//visibility:public"],
+)
+EOF
+  cat << 'EOF' > pkg/b2/B.java
+package com.example;
+
+public class B {
+  public void bar() {}
+}
+EOF
+
+  bazel build //pkg:a --experimental_one_version_enforcement=error \
+    --java_language_version=17 \
+    --extra_toolchains=//pkg:java_toolchain_definition \
+    >& $TEST_log && fail "build should have failed"
+  expect_log "Found one definition violations on the runtime classpath:"
+  expect_log "com.example.B has incompatible definitions in:"
+  expect_log " //pkg/b1:b1"
+  expect_log " //pkg/b2:b2"
+
+  cat > pkg/allowlist <<EOF
+foo/bar @repo//baz
+com/example //pkg/b1:b1
+EOF
+  bazel build //pkg:a --experimental_one_version_enforcement=error \
+    --java_language_version=17 \
+    --extra_toolchains=//pkg:java_toolchain_definition \
+    >& $TEST_log || fail "build should have succeeded"
+}
+
+
+function test_single_jar_does_not_create_empty_log4JPlugins_file() {
+  mkdir -p pkg
+  cat << 'EOF' > pkg/BUILD
+java_library(
+    name = "b",
+    resources = ["foo.txt"],
+    visibility = ["//visibility:public"],
+)
+EOF
+  echo > pkg/foo.txt
+
+  bazel build //pkg:b \
+    >& $TEST_log || fail "build should have succeeded"
+  zipinfo -1 ${PRODUCT_NAME}-bin/pkg/libb.jar >& $TEST_log \
+       || fail "Failed to zipinfo ${PRODUCT_NAME}-bin/pkg/libb.jar"
+  expect_not_log "Log4j2Plugins.dat"
+  expect_log "foo.txt"
 }
 
 run_suite "Java integration tests"

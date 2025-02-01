@@ -125,6 +125,7 @@ public abstract class GlobTestBase {
     PrecomputedValue.STARLARK_SEMANTICS.set(differencer, StarlarkSemantics.DEFAULT);
     RepositoryDelegatorFunction.RESOLVED_FILE_INSTEAD_OF_WORKSPACE.set(
         differencer, Optional.empty());
+    RepositoryDelegatorFunction.VENDOR_DIRECTORY.set(differencer, Optional.empty());
 
     createTestFiles();
   }
@@ -144,6 +145,8 @@ public abstract class GlobTestBase {
             ExternalFileAction.DEPEND_ON_EXTERNAL_PKG_FOR_EXTERNAL_REPO_PATHS,
             directories);
 
+    AnalysisMock analysisMock = AnalysisMock.get();
+    RuleClassProvider ruleClassProvider = analysisMock.createRuleClassProvider();
     Map<SkyFunctionName, SkyFunction> skyFunctions = new HashMap<>();
     createGlobSkyFunction(skyFunctions);
     skyFunctions.put(
@@ -158,8 +161,10 @@ public abstract class GlobTestBase {
             BazelSkyframeExecutorConstants.BUILD_FILES_BY_PRIORITY,
             BazelSkyframeExecutorConstants.EXTERNAL_PACKAGE_HELPER));
     skyFunctions.put(
-        SkyFunctions.IGNORED_PACKAGE_PREFIXES,
-        BazelSkyframeExecutorConstants.IGNORED_PACKAGE_PREFIXES_FUNCTION);
+        SkyFunctions.REPO_FILE,
+        new RepoFileFunction(
+            ruleClassProvider.getBazelStarlarkEnvironment(), directories.getWorkspace()));
+    skyFunctions.put(SkyFunctions.IGNORED_SUBDIRECTORIES, IgnoredSubdirectoriesFunction.INSTANCE);
     skyFunctions.put(
         FileStateKey.FILE_STATE,
         new FileStateFunction(
@@ -169,11 +174,9 @@ public abstract class GlobTestBase {
     skyFunctions.put(
         FileSymlinkInfiniteExpansionUniquenessFunction.NAME,
         new FileSymlinkCycleUniquenessFunction());
-    skyFunctions.put(FileValue.FILE, new FileFunction(pkgLocator, directories));
+    skyFunctions.put(SkyFunctions.FILE, new FileFunction(pkgLocator, directories));
     skyFunctions.put(
         FileSymlinkCycleUniquenessFunction.NAME, new FileSymlinkCycleUniquenessFunction());
-    AnalysisMock analysisMock = AnalysisMock.get();
-    RuleClassProvider ruleClassProvider = analysisMock.createRuleClassProvider();
     skyFunctions.put(
         WorkspaceFileValue.WORKSPACE_FILE,
         new WorkspaceFileFunction(
@@ -210,6 +213,10 @@ public abstract class GlobTestBase {
 
   @ForOverride
   protected abstract void createGlobSkyFunction(Map<SkyFunctionName, SkyFunction> skyFunctions);
+
+  protected boolean alwaysUsesDirListing() {
+    return false;
+  }
 
   private void createTestFiles() throws IOException {
     pkgPath.createDirectoryAndParents();
@@ -387,51 +394,6 @@ public abstract class GlobTestBase {
     assertSingleGlobMatches("foo/**", /* => */ "foo/barnacle/wiz", "foo/barnacle", "foo");
   }
 
-  @Test
-  public void testGlobDoesNotCrossRepositoryBoundary() throws Exception {
-    FileSystemUtils.appendIsoLatin1(
-        root.getRelative("WORKSPACE"), "local_repository(name='local', path='pkg/foo')");
-    FileSystemUtils.createEmptyFile(pkgPath.getRelative("foo/WORKSPACE"));
-    FileSystemUtils.createEmptyFile(pkgPath.getRelative("foo/BUILD"));
-    // "foo/bar" should not be in the results because foo is a separate repository.
-    assertSingleGlobMatches("f*/*", /* => */ "food/barnacle", "fool/barnacle");
-  }
-
-  @Test
-  public void testGlobDirectoryMatchDoesNotCrossRepositoryBoundary() throws Exception {
-    FileSystemUtils.appendIsoLatin1(
-        root.getRelative("WORKSPACE"), "local_repository(name='local', path='pkg/foo/bar')");
-    FileSystemUtils.createEmptyFile(pkgPath.getRelative("foo/bar/WORKSPACE"));
-    FileSystemUtils.createEmptyFile(pkgPath.getRelative("foo/bar/BUILD"));
-    // "foo/bar" should not be in the results because foo/bar is a separate repository.
-    assertSingleGlobMatches("foo/*", /* => */ "foo/barnacle");
-  }
-
-  @Test
-  public void testStarStarDoesNotCrossRepositoryBoundary() throws Exception {
-    FileSystemUtils.appendIsoLatin1(
-        root.getRelative("WORKSPACE"), "local_repository(name='local', path='pkg/foo/bar')");
-    FileSystemUtils.createEmptyFile(pkgPath.getRelative("foo/bar/WORKSPACE"));
-    FileSystemUtils.createEmptyFile(pkgPath.getRelative("foo/bar/BUILD"));
-    // "foo/bar" should not be in the results because foo/bar is a separate repository.
-    assertSingleGlobMatches("foo/**", /* => */ "foo/barnacle/wiz", "foo/barnacle", "foo");
-  }
-
-  @Test
-  public void testGlobDoesNotCrossRepositoryBoundaryUnderOtherPackagePath() throws Exception {
-    FileSystemUtils.appendIsoLatin1(
-        root.getRelative("WORKSPACE"),
-        "local_repository(name='local', path='"
-            + writableRoot.getRelative("pkg/foo/bar").getPathString()
-            + "')");
-    writableRoot.getRelative("pkg/foo/bar").createDirectoryAndParents();
-    FileSystemUtils.createEmptyFile(writableRoot.getRelative("pkg/foo/bar/WORKSPACE"));
-    FileSystemUtils.createEmptyFile(writableRoot.getRelative("pkg/foo/bar/BUILD"));
-    // "foo/bar" should not be in the results because foo/bar is detected as a separate package,
-    // even though it is under a different package path.
-    assertSingleGlobMatches("foo/**", /* => */ "foo/barnacle/wiz", "foo/barnacle", "foo");
-  }
-
   /**
    * For {@link GlobFunctionTest}, creates a {@link GlobDescriptor} using the input pattern.
    *
@@ -463,7 +425,7 @@ public abstract class GlobTestBase {
       throws Exception;
 
   @Test
-  public void testGlobWithoutWildcardsDoesNotCallReaddir() throws Exception {
+  public void testGlobWithoutWildcards() throws Exception {
     String pattern = "foo/bar/wiz/file";
 
     assertSingleGlobMatches(pattern, "foo/bar/wiz/file");
@@ -473,18 +435,36 @@ public abstract class GlobTestBase {
     // Nothing has been invalidated yet, so the cached result is returned.
     assertSingleGlobMatches(pattern, "foo/bar/wiz/file");
 
-    differencer.invalidate(
-        ImmutableList.of(
-            DirectoryListingStateValue.key(
-                RootedPath.toRootedPath(Root.fromPath(root), pkgPath.getRelative("foo/bar/wiz")))));
-    // The result should not rely on the DirectoryListingValue, so it's still a cache hit.
-    assertSingleGlobMatches(pattern, "foo/bar/wiz/file");
+    if (alwaysUsesDirListing()) {
+      differencer.invalidate(
+          ImmutableList.of(
+              FileStateValue.key(
+                  RootedPath.toRootedPath(
+                      Root.fromPath(root), pkgPath.getRelative("foo/bar/wiz/file")))));
+      // The result should not rely on the FileStateValue, so it's still a cache hit.
+      assertSingleGlobMatches(pattern, "foo/bar/wiz/file");
 
-    differencer.invalidate(
-        ImmutableList.of(
-            FileStateValue.key(
-                RootedPath.toRootedPath(
-                    Root.fromPath(root), pkgPath.getRelative("foo/bar/wiz/file")))));
+      differencer.invalidate(
+          ImmutableList.of(
+              DirectoryListingStateValue.key(
+                  RootedPath.toRootedPath(
+                      Root.fromPath(root), pkgPath.getRelative("foo/bar/wiz")))));
+    } else {
+      differencer.invalidate(
+          ImmutableList.of(
+              DirectoryListingStateValue.key(
+                  RootedPath.toRootedPath(
+                      Root.fromPath(root), pkgPath.getRelative("foo/bar/wiz")))));
+      // The result should not rely on the DirectoryListingValue, so it's still a cache hit.
+      assertSingleGlobMatches(pattern, "foo/bar/wiz/file");
+
+      differencer.invalidate(
+          ImmutableList.of(
+              FileStateValue.key(
+                  RootedPath.toRootedPath(
+                      Root.fromPath(root), pkgPath.getRelative("foo/bar/wiz/file")))));
+    }
+
     // This should have invalidated the glob result.
     assertSingleGlobMatches(pattern /* => nothing */);
   }
@@ -854,7 +834,7 @@ public abstract class GlobTestBase {
     EvaluationResult<GlobValue> result =
         evaluator.evaluate(ImmutableList.of(skyKey), EVALUATION_OPTIONS);
 
-    if (withRecursiveWildcard) {
+    if (withRecursiveWildcard || alwaysUsesDirListing()) {
       assertThat(result.hasError()).isTrue();
       ErrorInfo errorInfo = result.getError(skyKey);
       assertThat(errorInfo.getException())

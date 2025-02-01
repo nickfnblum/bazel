@@ -14,8 +14,8 @@
 package com.google.devtools.build.lib.packages;
 
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static java.util.Objects.requireNonNull;
 
-import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -164,6 +164,17 @@ public abstract class ImplicitOutputsFunction {
    * Implicit output functions which can not throw an EvalException.
    */
   public abstract static class SafeImplicitOutputsFunction extends ImplicitOutputsFunction {
+
+    /** The implicit output function that returns no files. */
+    @SerializationConstant
+    public static final SafeImplicitOutputsFunction NONE =
+        new SafeImplicitOutputsFunction() {
+          @Override
+          public Iterable<String> getImplicitOutputs(EventHandler eventHandler, AttributeMap rule) {
+            return Collections.emptyList();
+          }
+        };
+
     @Override
     public abstract Iterable<String> getImplicitOutputs(
         EventHandler eventHandler, AttributeMap map);
@@ -187,16 +198,6 @@ public abstract class ImplicitOutputsFunction {
    */
   public abstract Iterable<String> getImplicitOutputs(EventHandler eventHandler, AttributeMap rule)
       throws EvalException, InterruptedException;
-
-  /** The implicit output function that returns no files. */
-  @SerializationConstant
-  public static final SafeImplicitOutputsFunction NONE =
-      new SafeImplicitOutputsFunction() {
-        @Override
-        public Iterable<String> getImplicitOutputs(EventHandler eventHandler, AttributeMap rule) {
-          return Collections.emptyList();
-        }
-      };
 
   /**
    * A convenience wrapper for {@link #fromTemplates(Iterable)}.
@@ -363,8 +364,8 @@ public abstract class ImplicitOutputsFunction {
       return ImmutableSet.of(rule.get(attrName, Type.STRING));
     } else if (Type.STRING_NO_INTERN == attrType) {
       return ImmutableSet.of(rule.get(attrName, Type.STRING_NO_INTERN));
-    } else if (Type.STRING_LIST == attrType) {
-      return ImmutableSet.copyOf(rule.get(attrName, Type.STRING_LIST));
+    } else if (Types.STRING_LIST == attrType) {
+      return ImmutableSet.copyOf(rule.get(attrName, Types.STRING_LIST));
     } else if (BuildType.LABEL == attrType) {
       // Labels are most often used to change the extension,
       // e.g. %.foo -> %.java, so we return the basename w/o extension.
@@ -457,13 +458,12 @@ public abstract class ImplicitOutputsFunction {
     return parsedTemplate.substituteAttributes(rule, attributeGetter);
   }
 
-  @AutoValue
-  abstract static class ParsedTemplate {
-    abstract String template();
-
-    abstract String formatStr();
-
-    abstract List<String> attributeNames();
+  record ParsedTemplate(String template, String formatStr, List<String> attributeNames) {
+    ParsedTemplate {
+      requireNonNull(template, "template");
+      requireNonNull(formatStr, "formatStr");
+      requireNonNull(attributeNames, "attributeNames");
+    }
 
     static ParsedTemplate parse(String rawTemplate) {
       List<String> placeholders = Lists.newArrayList();
@@ -471,8 +471,7 @@ public abstract class ImplicitOutputsFunction {
       if (placeholders.isEmpty()) {
         placeholders = ImmutableList.of();
       }
-      return new AutoValue_ImplicitOutputsFunction_ParsedTemplate(
-            rawTemplate, formatStr, placeholders);
+      return new ParsedTemplate(rawTemplate, formatStr, placeholders);
     }
 
     ImmutableList<String> substituteAttributes(

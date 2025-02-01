@@ -24,10 +24,13 @@ import static com.google.devtools.build.skyframe.GraphTester.COPY;
 import static com.google.devtools.build.skyframe.GraphTester.NODE_TYPE;
 import static com.google.devtools.build.skyframe.GraphTester.nonHermeticKey;
 import static com.google.devtools.build.skyframe.GraphTester.skyKey;
+import static java.util.Objects.requireNonNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.fail;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
-import com.google.auto.value.AutoValue;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableList;
@@ -51,10 +54,12 @@ import com.google.devtools.build.skyframe.GraphTester.NotComparableStringValue;
 import com.google.devtools.build.skyframe.GraphTester.StringValue;
 import com.google.devtools.build.skyframe.GraphTester.TestFunction;
 import com.google.devtools.build.skyframe.GraphTester.ValueComputer;
+import com.google.devtools.build.skyframe.MemoizingEvaluator.GraphTransformerForTesting;
 import com.google.devtools.build.skyframe.NodeEntry.DirtyType;
 import com.google.devtools.build.skyframe.NotifyingHelper.EventType;
 import com.google.devtools.build.skyframe.NotifyingHelper.Listener;
 import com.google.devtools.build.skyframe.NotifyingHelper.Order;
+import com.google.devtools.build.skyframe.QueryableGraph.Reason;
 import com.google.devtools.build.skyframe.SkyFunction.Reset;
 import com.google.devtools.build.skyframe.SkyFunctionException.Transience;
 import com.google.devtools.build.skyframe.proto.GraphInconsistency.Inconsistency;
@@ -78,6 +83,7 @@ import javax.annotation.Nullable;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.mockito.InOrder;
 
 /** Tests for a {@link MemoizingEvaluator}. */
 public abstract class MemoizingEvaluatorTest {
@@ -174,6 +180,64 @@ public abstract class MemoizingEvaluatorTest {
   public void evaluateEmptySet() throws InterruptedException {
     tester.eval(false, new SkyKey[0]);
     tester.eval(true, new SkyKey[0]);
+  }
+
+  @Test
+  public void injectGraphTransformer_transformedGraphUsedForInMemoryGraph() {
+    assume().that(tester.evaluator).isInstanceOf(AbstractInMemoryMemoizingEvaluator.class);
+    InMemoryGraph realGraph = tester.evaluator.getInMemoryGraph();
+    InMemoryGraph mockGraph = mock(InMemoryGraph.class);
+
+    tester.evaluator.injectGraphTransformerForTesting(
+        new GraphTransformerForTesting() {
+          @Override
+          public InMemoryGraph transform(InMemoryGraph graph) {
+            assertThat(graph).isSameInstanceAs(realGraph);
+            return mockGraph;
+          }
+
+          @Override
+          public ProcessableGraph transform(ProcessableGraph graph) {
+            throw new AssertionError(graph);
+          }
+        });
+
+    assertThat(tester.evaluator.getInMemoryGraph()).isSameInstanceAs(mockGraph);
+  }
+
+  @Test
+  public void injectGraphTransformer_transformedGraphUsedForEvaluation() throws Exception {
+    Listener listener = mock(Listener.class);
+    tester.evaluator.injectGraphTransformerForTesting(
+        NotifyingHelper.makeNotifyingTransformer(listener));
+    SkyKey key = skyKey("key");
+    SkyValue val = new StringValue("val");
+    tester.getOrCreate(key).setConstantValue(val);
+
+    assertThat(tester.evalAndGet(/* keepGoing= */ false, key)).isEqualTo(val);
+
+    verify(listener).accept(key, EventType.GET_BATCH, Order.BEFORE, Reason.PRE_OR_POST_EVALUATION);
+  }
+
+  @Test
+  public void injectGraphTransformer_multipleTransformersAppliedInOrder() throws Exception {
+    Listener inner = mock(Listener.class);
+    Listener outer = mock(Listener.class);
+    tester.evaluator.injectGraphTransformerForTesting(
+        NotifyingHelper.makeNotifyingTransformer(inner));
+    tester.evaluator.injectGraphTransformerForTesting(
+        NotifyingHelper.makeNotifyingTransformer(outer));
+    SkyKey key = skyKey("key");
+    SkyValue val = new StringValue("val");
+    tester.getOrCreate(key).setConstantValue(val);
+
+    assertThat(tester.evalAndGet(/* keepGoing= */ false, key)).isEqualTo(val);
+
+    InOrder inOrder = inOrder(inner, outer);
+    inOrder.verify(outer).accept(key, EventType.SET_VALUE, Order.BEFORE, val);
+    inOrder.verify(inner).accept(key, EventType.SET_VALUE, Order.BEFORE, val);
+    inOrder.verify(inner).accept(key, EventType.SET_VALUE, Order.AFTER, val);
+    inOrder.verify(outer).accept(key, EventType.SET_VALUE, Order.AFTER, val);
   }
 
   @Test
@@ -1582,7 +1646,11 @@ public abstract class MemoizingEvaluatorTest {
     topLevelBuilder.setConstantValue(new StringValue("xyz"));
 
     EvaluationResult<StringValue> result =
-        tester.eval(/*keepGoing=*/ true, /*numThreads=*/ 5, topLevel);
+        tester.eval(
+            /* keepGoing= */ true,
+            /* mergingSkyframeAnalysisExecutionPhases= */ false,
+            /* numThreads= */ 5,
+            topLevel);
     assertThat(result.hasError()).isFalse();
     assertThat(maxValue[0]).isEqualTo(5);
   }
@@ -5782,13 +5850,13 @@ public abstract class MemoizingEvaluatorTest {
   }
 
   /** Data encapsulating a graph inconsistency found during evaluation. */
-  @AutoValue
-  abstract static class InconsistencyData {
-    abstract SkyKey key();
-
-    abstract ImmutableSet<SkyKey> otherKeys();
-
-    abstract Inconsistency inconsistency();
+  record InconsistencyData(
+      SkyKey key, ImmutableSet<SkyKey> otherKeys, Inconsistency inconsistency) {
+    InconsistencyData {
+      requireNonNull(key, "key");
+      requireNonNull(otherKeys, "otherKeys");
+      requireNonNull(inconsistency, "inconsistency");
+    }
 
     static InconsistencyData resetRequested(SkyKey key) {
       return create(key, /* otherKeys= */ null, Inconsistency.RESET_REQUESTED);
@@ -5800,7 +5868,7 @@ public abstract class MemoizingEvaluatorTest {
 
     static InconsistencyData create(
         SkyKey key, @Nullable Collection<SkyKey> otherKeys, Inconsistency inconsistency) {
-      return new AutoValue_MemoizingEvaluatorTest_InconsistencyData(
+      return new InconsistencyData(
           key,
           otherKeys == null ? ImmutableSet.of() : ImmutableSet.copyOf(otherKeys),
           inconsistency);
@@ -5890,11 +5958,16 @@ public abstract class MemoizingEvaluatorTest {
     }
 
     public <T extends SkyValue> EvaluationResult<T> eval(
-        boolean keepGoing, int numThreads, SkyKey... keys) throws InterruptedException {
+        boolean keepGoing,
+        boolean mergingSkyframeAnalysisExecutionPhases,
+        int numThreads,
+        SkyKey... keys)
+        throws InterruptedException {
       assertThat(getModifiedValues()).isEmpty();
       EvaluationContext evaluationContext =
           EvaluationContext.newBuilder()
               .setKeepGoing(keepGoing)
+              .setMergingSkyframeAnalysisExecutionPhases(mergingSkyframeAnalysisExecutionPhases)
               .setParallelism(numThreads)
               .setEventHandler(reporter)
               .build();
@@ -5911,7 +5984,13 @@ public abstract class MemoizingEvaluatorTest {
 
     public <T extends SkyValue> EvaluationResult<T> eval(boolean keepGoing, SkyKey... keys)
         throws InterruptedException {
-      return eval(keepGoing, 100, keys);
+      return eval(keepGoing, /* mergingSkyframeAnalysisExecutionPhases= */ false, 100, keys);
+    }
+
+    public <T extends SkyValue> EvaluationResult<T> eval(
+        boolean keepGoing, boolean mergingSkyframeAnalysisExecutionPhases, SkyKey... keys)
+        throws InterruptedException {
+      return eval(keepGoing, mergingSkyframeAnalysisExecutionPhases, 100, keys);
     }
 
     public <T extends SkyValue> EvaluationResult<T> eval(boolean keepGoing, String... keys)
@@ -5936,6 +6015,15 @@ public abstract class MemoizingEvaluatorTest {
 
     public ErrorInfo evalAndGetError(boolean keepGoing, SkyKey key) throws InterruptedException {
       EvaluationResult<StringValue> evaluationResult = eval(keepGoing, key);
+      assertThatEvaluationResult(evaluationResult).hasErrorEntryForKeyThat(key);
+      return evaluationResult.getError(key);
+    }
+
+    public ErrorInfo evalAndGetError(
+        boolean keepGoing, boolean mergingSkyframeAnalysisExecutionPhases, SkyKey key)
+        throws InterruptedException {
+      EvaluationResult<StringValue> evaluationResult =
+          eval(keepGoing, mergingSkyframeAnalysisExecutionPhases, key);
       assertThatEvaluationResult(evaluationResult).hasErrorEntryForKeyThat(key);
       return evaluationResult.getError(key);
     }

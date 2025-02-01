@@ -21,7 +21,6 @@ import com.google.devtools.build.lib.collect.nestedset.Depset;
 import com.google.devtools.build.lib.collect.nestedset.Depset.TypeException;
 import com.google.devtools.build.lib.packages.Info;
 import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
-import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
 import com.google.devtools.build.lib.starlarkbuildapi.FileApi;
 import com.google.devtools.build.lib.starlarkbuildapi.StarlarkActionFactoryApi;
 import com.google.devtools.build.lib.starlarkbuildapi.StarlarkRuleContextApi;
@@ -78,21 +77,6 @@ public interface JavaCommonApi<
       parameters = {
         @Param(name = "actions", named = true, doc = "ctx.actions"),
         @Param(
-            name = "output_jar",
-            positional = false,
-            named = true,
-            allowedTypes = {
-              @ParamType(type = FileApi.class),
-              @ParamType(type = NoneType.class),
-            },
-            defaultValue = "None",
-            doc =
-                "Deprecated: The output jar of the rule. Used to name the resulting source jar. "
-                    + "The parameter sets output_source_jar parameter to `{output_jar}-src.jar`."
-                    + "Use output_source_jar parameter directly instead.",
-            disableWithFlag = BuildLanguageOptions.INCOMPATIBLE_JAVA_COMMON_PARAMETERS,
-            valueWhenDisabled = "None"),
-        @Param(
             name = "output_source_jar",
             positional = false,
             named = true,
@@ -121,25 +105,13 @@ public interface JavaCommonApi<
             positional = false,
             named = true,
             doc = "A JavaToolchainInfo to used to find the ijar tool."),
-        @Param(
-            name = "host_javabase",
-            positional = false,
-            named = true,
-            doc =
-                "Deprecated: You can drop this parameter (host_javabase is provided with "
-                    + "java_toolchain)",
-            defaultValue = "None",
-            disableWithFlag = BuildLanguageOptions.INCOMPATIBLE_JAVA_COMMON_PARAMETERS,
-            valueWhenDisabled = "None"),
       })
   default FileApi packSources(
       StarlarkActionFactoryT actions,
-      Object outputJar,
       Object outputSourceJar,
       Sequence<?> sourceFiles, // <FileT> expected.
       Sequence<?> sourceJars, // <FileT> expected.
-      Info javaToolchain,
-      Object hostJavabase)
+      Info javaToolchain)
       throws EvalException {
     throw new UnsupportedOperationException();
   }
@@ -253,28 +225,28 @@ public interface JavaCommonApi<
               @ParamType(type = NoneType.class),
             },
             defaultValue = "None",
-            doc = "The output source jar. Optional. Defaults to `{output_jar}-src.jar` if unset."),
+            doc = "The output source jar. Defaults to `{output_jar}-src.jar` if unset."),
         @Param(
             name = "javac_opts",
             positional = false,
             named = true,
             allowedTypes = {@ParamType(type = Sequence.class, generic1 = String.class)},
             defaultValue = "[]",
-            doc = "A list of the desired javac options. Optional."),
+            doc = "A list of the desired javac options."),
         @Param(
             name = "deps",
             positional = false,
             named = true,
             allowedTypes = {@ParamType(type = Sequence.class, generic1 = JavaInfoApi.class)},
             defaultValue = "[]",
-            doc = "A list of dependencies. Optional."),
+            doc = "A list of dependencies."),
         @Param(
             name = "runtime_deps",
             positional = false,
             named = true,
             allowedTypes = {@ParamType(type = Sequence.class, generic1 = JavaInfoApi.class)},
             defaultValue = "[]",
-            doc = "A list of runtime dependencies. Optional."),
+            doc = "A list of runtime dependencies."),
         @Param(
             name = "exports",
             positional = false,
@@ -283,7 +255,7 @@ public interface JavaCommonApi<
               @ParamType(type = Sequence.class, generic1 = JavaInfoApi.class),
             },
             defaultValue = "[]",
-            doc = "A list of exports. Optional."),
+            doc = "A list of exports."),
         @Param(
             name = "plugins",
             positional = false,
@@ -293,7 +265,7 @@ public interface JavaCommonApi<
               @ParamType(type = Sequence.class, generic1 = JavaInfoApi.class)
             },
             defaultValue = "[]",
-            doc = "A list of plugins. Optional."),
+            doc = "A list of plugins."),
         @Param(
             name = "exported_plugins",
             positional = false,
@@ -303,7 +275,7 @@ public interface JavaCommonApi<
               @ParamType(type = Sequence.class, generic1 = JavaInfoApi.class)
             },
             defaultValue = "[]",
-            doc = "A list of exported plugins. Optional."),
+            doc = "A list of exported plugins."),
         @Param(
             name = "native_libraries",
             positional = false,
@@ -336,8 +308,9 @@ public interface JavaCommonApi<
             named = true,
             doc =
                 "A string that specifies how to handle strict deps. Possible values: 'OFF', "
-                    + "'ERROR', 'WARN' and 'DEFAULT'. For more details see "
-                    + "${link user-manual#flag--strict_java_deps}. By default 'ERROR'."),
+                    + "'ERROR', 'WARN' and 'DEFAULT'. For more details see <a href=\""
+                    + "${link user-manual#flag--strict_java_deps}\"><code>--strict_java_deps<code>"
+                    + " flag</a>. By default 'ERROR'."),
         @Param(
             name = "java_toolchain",
             positional = false,
@@ -350,17 +323,7 @@ public interface JavaCommonApi<
             defaultValue = "None",
             doc =
                 "A BootClassPathInfo to be used for this compilation. If present, overrides the"
-                    + " bootclasspath associated with the provided java_toolchain. Optional."),
-        @Param(
-            name = "host_javabase",
-            positional = false,
-            named = true,
-            doc =
-                "Deprecated: You can drop this parameter (host_javabase is provided with "
-                    + "java_toolchain)",
-            defaultValue = "None",
-            disableWithFlag = BuildLanguageOptions.INCOMPATIBLE_JAVA_COMMON_PARAMETERS,
-            valueWhenDisabled = "None"),
+                    + " bootclasspath associated with the provided java_toolchain."),
         @Param(
             name = "sourcepath",
             positional = false,
@@ -433,16 +396,14 @@ public interface JavaCommonApi<
             named = true,
             allowedTypes = {@ParamType(type = Sequence.class, generic1 = String.class)},
             defaultValue = "[]",
-            doc = "Allow this library to access the given <module>/<package>. Optional."),
+            doc = "Allow this library to access the given <module>/<package>."),
         @Param(
             name = "add_opens",
             positional = false,
             named = true,
             allowedTypes = {@ParamType(type = Sequence.class, generic1 = String.class)},
             defaultValue = "[]",
-            doc =
-                "Allow this library to reflectively access the given <module>/<package>."
-                    + " Optional."),
+            doc = "Allow this library to reflectively access the given <module>/<package>."),
       },
       useStarlarkThread = true)
   default JavaInfoT createJavaCompileAction(
@@ -463,7 +424,6 @@ public interface JavaCommonApi<
       String strictDepsMode,
       Info javaToolchain,
       Object bootClassPath,
-      Object hostJavabase,
       Sequence<?> sourcepathEntries, // <FileT> expected.
       Sequence<?> resources, // <FileT> expected.
       Sequence<?> resourceJars, // <FileT> expected.
@@ -523,7 +483,11 @@ public interface JavaCommonApi<
       Object injectingRuleKind,
       boolean enableDirectClasspath,
       Sequence<?> additionalInputs)
-      throws EvalException, TypeException, RuleErrorException, LabelSyntaxException;
+      throws EvalException,
+          TypeException,
+          RuleErrorException,
+          LabelSyntaxException,
+          InterruptedException;
 
   @StarlarkMethod(
       name = "create_compilation_action",
@@ -587,7 +551,11 @@ public interface JavaCommonApi<
       boolean enableDirectClasspath,
       Sequence<?> additionalInputs,
       Sequence<?> additionalOutputs)
-      throws EvalException, TypeException, RuleErrorException, LabelSyntaxException;
+      throws EvalException,
+          TypeException,
+          RuleErrorException,
+          LabelSyntaxException,
+          InterruptedException;
 
   @StarlarkMethod(
       name = "default_javac_opts",
@@ -701,14 +669,6 @@ public interface JavaCommonApi<
       documented = false,
       useStarlarkThread = true)
   boolean isJavaInfoMergeRuntimeModuleFlagsEnabled(StarlarkThread thread) throws EvalException;
-
-  @StarlarkMethod(
-      name = "wrap_java_info",
-      parameters = {@Param(name = "java_info")},
-      documented = false,
-      useStarlarkThread = true)
-  JavaInfoT wrapJavaInfo(Info javaInfo, StarlarkThread thread)
-      throws EvalException, RuleErrorException;
 
   @StarlarkMethod(
       name = "incompatible_disable_non_executable_java_binary",

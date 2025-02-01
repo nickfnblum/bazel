@@ -61,24 +61,36 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
   public final void writeBuildFile() throws Exception {
     scratch.file(
         "java/jarlib/BUILD",
-        "java_import(name = 'libraryjar',",
-        "            jars = ['library.jar'])",
-        "java_import(name = 'libraryjar_with_srcjar',",
-        "            jars = ['library.jar'],",
-        "            srcjar = 'library.srcjar')");
+        """
+        load("@rules_java//java:defs.bzl", "java_import")
+        java_import(
+            name = "libraryjar",
+            jars = ["library.jar"],
+        )
+
+        java_import(
+            name = "libraryjar_with_srcjar",
+            jars = ["library.jar"],
+            srcjar = "library.srcjar",
+        )
+        """);
 
     scratch.overwriteFile(
         "tools/allowlists/java_import_exports/BUILD",
-        "package_group(",
-        "    name = 'java_import_exports',",
-        "    packages = ['//...'],",
-        ")");
+        """
+        package_group(
+            name = "java_import_exports",
+            packages = ["//..."],
+        )
+        """);
     scratch.overwriteFile(
         "tools/allowlists/java_import_empty_jars/BUILD",
-        "package_group(",
-        "    name = 'java_import_empty_jars',",
-        "    packages = [],",
-        ")");
+        """
+        package_group(
+            name = "java_import_empty_jars",
+            packages = [],
+        )
+        """);
   }
 
   @Test
@@ -91,12 +103,17 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
   // Regression test for b/262751943.
   @Test
   public void testCommandLineContainsTargetLabel() throws Exception {
-    scratch.file("java/BUILD", "java_import(name = 'java_imp', jars = ['import.jar'])");
+    scratch.file(
+        "java/BUILD",
+        """
+        load("@rules_java//java:defs.bzl", "java_import")
+        java_import(name = 'java_imp', jars = ['import.jar'])
+        """);
 
     ConfiguredTarget configuredTarget = getConfiguredTarget("//java:java_imp");
     Artifact compiledArtifact =
         JavaInfo.getProvider(JavaCompilationArgsProvider.class, configuredTarget)
-            .getDirectCompileTimeJars()
+            .directCompileTimeJars()
             .toList()
             .get(0);
     SpawnAction action = (SpawnAction) getGeneratingAction(compiledArtifact);
@@ -111,6 +128,7 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
     scratchConfiguredTarget(
         "java",
         "javalib",
+        "load('@rules_java//java:defs.bzl', 'java_library')",
         "java_library(name = 'javalib',",
         "             srcs = ['Other.java'],",
         "             exports = ['//java/jarlib:libraryjar'])");
@@ -143,9 +161,14 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
   public void testWithJavaLibrary() throws Exception {
     scratch.file(
         "java/somelib/BUILD",
-        "java_library(name  = 'javalib',",
-        "             srcs = ['Other.java'],",
-        "             deps = ['//java/jarlib:libraryjar'])");
+        """
+        load("@rules_java//java:defs.bzl", "java_library")
+        java_library(
+            name = "javalib",
+            srcs = ["Other.java"],
+            deps = ["//java/jarlib:libraryjar"],
+        )
+        """);
 
     ConfiguredTarget javaLib = getConfiguredTarget("//java/somelib:javalib");
 
@@ -160,18 +183,31 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
   public void testDeps() throws Exception {
     scratch.file(
         "java/jarlib2/BUILD",
-        "java_library(name  = 'lib',",
-        "             srcs = ['Main.java'],",
-        "             deps = [':import-jar'])",
-        "java_import(name  = 'import-jar',",
-        "            jars = ['import.jar'],",
-        "            deps = ['//java/jarlib2:depjar'],",
-        "            exports = ['//java/jarlib2:exportjar'],",
-        ")",
-        "java_import(name  = 'depjar',",
-        "            jars = ['depjar.jar'])",
-        "java_import(name  = 'exportjar',",
-        "            jars = ['exportjar.jar'])");
+        """
+        load("@rules_java//java:defs.bzl", "java_library", "java_import")
+        java_library(
+            name = "lib",
+            srcs = ["Main.java"],
+            deps = [":import-jar"],
+        )
+
+        java_import(
+            name = "import-jar",
+            jars = ["import.jar"],
+            exports = ["//java/jarlib2:exportjar"],
+            deps = ["//java/jarlib2:depjar"],
+        )
+
+        java_import(
+            name = "depjar",
+            jars = ["depjar.jar"],
+        )
+
+        java_import(
+            name = "exportjar",
+            jars = ["exportjar.jar"],
+        )
+        """);
 
     ConfiguredTarget importJar = getConfiguredTarget("//java/jarlib2:import-jar");
 
@@ -181,13 +217,13 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
     // JavaCompilationArgs should hold classpaths of the transitive closure.
     JavaCompilationArgsProvider recursiveCompilationArgs =
         JavaInfo.getProvider(JavaCompilationArgsProvider.class, importJar);
-    assertThat(prettyArtifactNames(recursiveCompilationArgs.getTransitiveCompileTimeJars()))
+    assertThat(prettyArtifactNames(recursiveCompilationArgs.transitiveCompileTimeJars()))
         .containsExactly(
             "java/jarlib2/_ijar/import-jar/java/jarlib2/import-ijar.jar",
             "java/jarlib2/_ijar/exportjar/java/jarlib2/exportjar-ijar.jar",
             "java/jarlib2/_ijar/depjar/java/jarlib2/depjar-ijar.jar")
         .inOrder();
-    assertThat(prettyArtifactNames(recursiveCompilationArgs.getRuntimeJars()))
+    assertThat(prettyArtifactNames(recursiveCompilationArgs.runtimeJars()))
         .containsExactly(
             "java/jarlib2/import.jar", "java/jarlib2/exportjar.jar", "java/jarlib2/depjar.jar")
         .inOrder();
@@ -195,12 +231,12 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
     // Recursive deps work the same as with java_library.
     JavaCompilationArgsProvider compilationArgsProvider =
         JavaInfo.getProvider(JavaCompilationArgsProvider.class, importJar);
-    assertThat(prettyArtifactNames(compilationArgsProvider.getDirectCompileTimeJars()))
+    assertThat(prettyArtifactNames(compilationArgsProvider.directCompileTimeJars()))
         .containsExactly(
             "java/jarlib2/_ijar/import-jar/java/jarlib2/import-ijar.jar",
             "java/jarlib2/_ijar/exportjar/java/jarlib2/exportjar-ijar.jar")
         .inOrder();
-    assertThat(prettyArtifactNames(compilationArgsProvider.getRuntimeJars()))
+    assertThat(prettyArtifactNames(compilationArgsProvider.runtimeJars()))
         .containsExactly(
             "java/jarlib2/import.jar", "java/jarlib2/exportjar.jar", "java/jarlib2/depjar.jar")
         .inOrder();
@@ -225,20 +261,33 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
   public void testModuleFlags() throws Exception {
     scratch.file(
         "java/jarlib2/BUILD",
-        "java_library(name  = 'lib',",
-        "             srcs = ['Main.java'],",
-        "             deps = [':import-jar'])",
-        "java_import(name  = 'import-jar',",
-        "            jars = ['import.jar'],",
-        "            deps = ['//java/jarlib2:depjar'],",
-        "            exports = ['//java/jarlib2:exportjar'],",
-        ")",
-        "java_import(name  = 'depjar',",
-        "            jars = ['depjar.jar'],",
-        "            add_exports = ['java.base/java.lang'])",
-        "java_import(name  = 'exportjar',",
-        "            jars = ['exportjar.jar'],",
-        "            add_opens = ['java.base/java.util'])");
+        """
+        load("@rules_java//java:defs.bzl", "java_library", "java_import")
+        java_library(
+            name = "lib",
+            srcs = ["Main.java"],
+            deps = [":import-jar"],
+        )
+
+        java_import(
+            name = "import-jar",
+            jars = ["import.jar"],
+            exports = ["//java/jarlib2:exportjar"],
+            deps = ["//java/jarlib2:depjar"],
+        )
+
+        java_import(
+            name = "depjar",
+            add_exports = ["java.base/java.lang"],
+            jars = ["depjar.jar"],
+        )
+
+        java_import(
+            name = "exportjar",
+            add_opens = ["java.base/java.util"],
+            jars = ["exportjar.jar"],
+        )
+        """);
 
     ConfiguredTarget importJar = getConfiguredTarget("//java/jarlib2:import-jar");
     JavaModuleFlagsProviderApi moduleFlagsProvider =
@@ -275,30 +324,41 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
   public void testFromGenrule() throws Exception {
     scratch.file(
         "java/genrules/BUILD",
-        "genrule(name  = 'generated_jar',",
-        "        outs = ['generated.jar'],",
-        "        cmd = '')",
-        "genrule(name  = 'generated_src_jar',",
-        "        outs = ['generated.srcjar'],",
-        "        cmd = '')",
-        "java_import(name  = 'library-jar',",
-        "            jars = [':generated_jar'],",
-        "            srcjar = ':generated_src_jar',",
-        "            exports = ['//java/jarlib:libraryjar'])");
+        """
+        load("@rules_java//java:defs.bzl", "java_import")
+        genrule(
+            name = "generated_jar",
+            outs = ["generated.jar"],
+            cmd = "",
+        )
+
+        genrule(
+            name = "generated_src_jar",
+            outs = ["generated.srcjar"],
+            cmd = "",
+        )
+
+        java_import(
+            name = "library-jar",
+            jars = [":generated_jar"],
+            srcjar = ":generated_src_jar",
+            exports = ["//java/jarlib:libraryjar"],
+        )
+        """);
     ConfiguredTarget jarLib = getConfiguredTarget("//java/genrules:library-jar");
 
     JavaCompilationArgsProvider compilationArgs =
         JavaInfo.getProvider(JavaCompilationArgsProvider.class, jarLib);
-    assertThat(prettyArtifactNames(compilationArgs.getTransitiveCompileTimeJars()))
+    assertThat(prettyArtifactNames(compilationArgs.transitiveCompileTimeJars()))
         .containsExactly(
             "java/genrules/_ijar/library-jar/java/genrules/generated-ijar.jar",
             "java/jarlib/_ijar/libraryjar/java/jarlib/library-ijar.jar")
         .inOrder();
-    assertThat(prettyArtifactNames(compilationArgs.getRuntimeJars()))
+    assertThat(prettyArtifactNames(compilationArgs.runtimeJars()))
         .containsExactly("java/genrules/generated.jar", "java/jarlib/library.jar")
         .inOrder();
 
-    Artifact jar = compilationArgs.getRuntimeJars().toList().get(0);
+    Artifact jar = compilationArgs.runtimeJars().toList().get(0);
     assertThat(getGeneratingAction(jar).prettyPrint())
         .isEqualTo("action 'Executing genrule //java/genrules:generated_jar'");
   }
@@ -307,9 +367,14 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
   public void testAllowsJarInSrcjars() throws Exception {
     scratch.file(
         "java/srcjarlib/BUILD",
-        "java_import(name  = 'library-jar',",
-        "            jars = ['somelib.jar'],",
-        "            srcjar = 'somelib-src.jar')");
+        """
+        load("@rules_java//java:defs.bzl", "java_import")
+        java_import(
+            name = "library-jar",
+            jars = ["somelib.jar"],
+            srcjar = "somelib-src.jar",
+        )
+        """);
     ConfiguredTarget jarLib = getConfiguredTarget("//java/srcjarlib:library-jar");
     assertThat(
             Iterables.getOnlyElement(
@@ -321,13 +386,26 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
 
   @Test
   public void testRequiresJars() throws Exception {
-    checkError("pkg", "rule", "mandatory attribute 'jars'", "java_import(name = 'rule')");
+    checkError(
+        "pkg",
+        "rule",
+        "mandatory attribute 'jars'",
+        """
+        load("@rules_java//java:defs.bzl", "java_import")
+        java_import(name = 'rule')
+        """);
   }
 
   @Test
   public void testPermitsEmptyJars() throws Exception {
     useConfiguration("--incompatible_disallow_java_import_empty_jars=0");
-    scratchConfiguredTarget("pkg", "rule", "java_import(name = 'rule', jars = [])");
+    scratchConfiguredTarget(
+        "pkg",
+        "rule",
+        """
+        load("@rules_java//java:defs.bzl", "java_import")
+        java_import(name = 'rule', jars = [])
+        """);
     assertNoEvents();
   }
 
@@ -338,7 +416,10 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
         "pkg",
         "rule",
         "expected no files",
-        "java_import(name = 'rule', jars = ['good.jar'], exports = ['bad.jar'])");
+        """
+        load("@rules_java//java:defs.bzl", "java_import")
+        java_import(name = 'rule', jars = ['good.jar'], exports = ['bad.jar'])
+        """);
   }
 
   @Test
@@ -349,6 +430,7 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
         "library-jar",
         getErrorMsgMisplacedFiles(
             "jars", "java_import", "//badlib:library-jar", "//badlib:not-a-jar.txt"),
+        "load('@rules_java//java:defs.bzl', 'java_import')",
         "java_import(name = 'library-jar',",
         "            jars = ['not-a-jar.txt'])");
   }
@@ -360,6 +442,7 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
         "library-jar",
         getErrorMsgNoGoodFiles("jars", "java_import", "//badlib:library-jar", "//badlib:gen"),
         "genrule(name = 'gen', outs = ['not-a-jar.txt'], cmd = '')",
+        "load('@rules_java//java:defs.bzl', 'java_import')",
         "java_import(name  = 'library-jar',",
         "            jars = [':gen'])");
   }
@@ -370,6 +453,7 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
         "badlib",
         "library-jar",
         "'jars' attribute cannot contain labels of Java targets",
+        "load('@rules_java//java:defs.bzl', 'java_library', 'java_import')",
         "java_library(name = 'javalib',",
         "             srcs = ['Javalib.java'])",
         "java_import(name  = 'library-jar',",
@@ -378,22 +462,36 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
 
   @Test
   public void testJavaImportExportsTransitiveProguardSpecs() throws Exception {
+    if (analysisMock.isThisBazel()) {
+      return;
+    }
     scratch.file(
         "java/com/google/android/hello/BUILD",
-        "java_import(name = 'export',",
-        "            jars = ['Export.jar'],",
-        "            proguard_specs = ['export.pro'],",
-        "            constraints = ['android'])",
-        "java_import(name = 'runtime_dep',",
-        "            jars = ['RuntimeDep.jar'],",
-        "            proguard_specs = ['runtime_dep.pro'],",
-        "            constraints = ['android'])",
-        "java_import(name = 'lib',",
-        "            jars = ['Lib.jar'],",
-        "            proguard_specs = ['lib.pro'],",
-        "            constraints = ['android'],",
-        "            exports = [':export'],",
-        "            runtime_deps = [':runtime_dep'])");
+        """
+        load("@rules_java//java:defs.bzl", "java_import")
+        java_import(
+            name = "export",
+            constraints = ["android"],
+            jars = ["Export.jar"],
+            proguard_specs = ["export.pro"],
+        )
+
+        java_import(
+            name = "runtime_dep",
+            constraints = ["android"],
+            jars = ["RuntimeDep.jar"],
+            proguard_specs = ["runtime_dep.pro"],
+        )
+
+        java_import(
+            name = "lib",
+            constraints = ["android"],
+            jars = ["Lib.jar"],
+            proguard_specs = ["lib.pro"],
+            exports = [":export"],
+            runtime_deps = [":runtime_dep"],
+        )
+        """);
     NestedSet<Artifact> providedSpecs =
         getConfiguredTarget("//java/com/google/android/hello:lib")
             .get(ProguardSpecProvider.PROVIDER)
@@ -406,10 +504,15 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
   public void testJavaImportValidatesProguardSpecs() throws Exception {
     scratch.file(
         "java/com/google/android/hello/BUILD",
-        "java_import(name = 'lib',",
-        "            jars = ['Lib.jar'],",
-        "            proguard_specs = ['lib.pro'],",
-        "            constraints = ['android'])");
+        """
+        load("@rules_java//java:defs.bzl", "java_import")
+        java_import(
+            name = "lib",
+            constraints = ["android"],
+            jars = ["Lib.jar"],
+            proguard_specs = ["lib.pro"],
+        )
+        """);
     SpawnAction action =
         (SpawnAction)
             actionsTestUtil()
@@ -428,14 +531,22 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
   public void testJavaImportValidatesTransitiveProguardSpecs() throws Exception {
     scratch.file(
         "java/com/google/android/hello/BUILD",
-        "java_import(name = 'transitive',",
-        "            jars = ['Transitive.jar'],",
-        "            proguard_specs = ['transitive.pro'],",
-        "            constraints = ['android'])",
-        "java_import(name = 'lib',",
-        "            jars = ['Lib.jar'],",
-        "            constraints = ['android'],",
-        "            exports = [':transitive'])");
+        """
+        load("@rules_java//java:defs.bzl", "java_import")
+        java_import(
+            name = "transitive",
+            constraints = ["android"],
+            jars = ["Transitive.jar"],
+            proguard_specs = ["transitive.pro"],
+        )
+
+        java_import(
+            name = "lib",
+            constraints = ["android"],
+            jars = ["Lib.jar"],
+            exports = [":transitive"],
+        )
+        """);
     SpawnAction action =
         (SpawnAction)
             actionsTestUtil()
@@ -454,13 +565,19 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
   public void testNeverlinkIsPopulated() throws Exception {
     scratch.file(
         "java/com/google/test/BUILD",
-        "java_library(name = 'lib')",
-        "java_import(name = 'jar',",
-        "    neverlink = 1,",
-        "    jars = ['dummy.jar'],",
-        "    exports = [':lib'])");
+        """
+        load("@rules_java//java:defs.bzl", "java_library", "java_import")
+        java_library(name = "lib")
+
+        java_import(
+            name = "jar",
+            jars = ["dummy.jar"],
+            neverlink = 1,
+            exports = [":lib"],
+        )
+        """);
     ConfiguredTarget processorTarget = getConfiguredTarget("//java/com/google/test:jar");
-    JavaInfo javaInfo = processorTarget.get(JavaInfo.PROVIDER);
+    JavaInfo javaInfo = JavaInfo.getJavaInfo(processorTarget);
     assertThat(javaInfo.isNeverlink()).isTrue();
   }
 
@@ -470,6 +587,8 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
         scratchConfiguredTarget(
             "java/my",
             "a",
+            "load('@rules_java//java:defs.bzl', 'java_library',"
+                + " 'java_import')",
             "java_import(name = 'a',",
             "    jars = ['dummy.jar'],",
             "    srcjar = 'dummy-src.jar',",
@@ -479,7 +598,7 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
     getConfiguredTarget("//java/my:a");
     Set<String> inputs =
         artifactsToStrings(
-            JavaInfo.getProvider(JavaSourceJarsProvider.class, aTarget).getTransitiveSourceJars());
+            JavaInfo.getProvider(JavaSourceJarsProvider.class, aTarget).transitiveSourceJars());
     assertThat(inputs)
         .isEqualTo(Sets.newHashSet("src java/my/dummy-src.jar", "bin java/my/libb-src.jar"));
   }
@@ -488,15 +607,26 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
   public void testExportsRunfilesCollection() throws Exception {
     scratch.file(
         "java/com/google/exports/BUILD",
-        "java_import(name = 'other_lib',",
-        "  data = ['foo.txt'],",
-        "  jars = ['other.jar'])",
-        "java_import(name = 'lib',",
-        "  jars = ['lib.jar'],",
-        "  exports = [':other_lib'])",
-        "java_binary(name = 'tool',",
-        "  data = [':lib'],",
-        "  main_class = 'com.google.exports.Launcher')");
+        """
+        load("@rules_java//java:defs.bzl", "java_binary", "java_import")
+        java_import(
+            name = "other_lib",
+            data = ["foo.txt"],
+            jars = ["other.jar"],
+        )
+
+        java_import(
+            name = "lib",
+            jars = ["lib.jar"],
+            exports = [":other_lib"],
+        )
+
+        java_binary(
+            name = "tool",
+            data = [":lib"],
+            main_class = "com.google.exports.Launcher",
+        )
+        """);
 
     ConfiguredTarget testTarget = getConfiguredTarget("//java/com/google/exports:tool");
     Runfiles runfiles = getDefaultRunfiles(testTarget);
@@ -512,15 +642,26 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
   public void testTransitiveDependencies() throws Exception {
     scratch.file(
         "java/jarlib2/BUILD",
-        "java_library(name = 'lib',",
-        "             srcs = ['Lib.java'],",
-        "             deps = ['//java/jarlib:libraryjar'])",
-        "java_import(name  = 'library2-jar',",
-        "            jars = ['library2.jar'],",
-        "            exports = [':lib'])",
-        "java_library(name  = 'javalib2',",
-        "             srcs = ['Other.java'],",
-        "             deps = [':library2-jar'])");
+        """
+        load("@rules_java//java:defs.bzl", "java_library", "java_import")
+        java_library(
+            name = "lib",
+            srcs = ["Lib.java"],
+            deps = ["//java/jarlib:libraryjar"],
+        )
+
+        java_import(
+            name = "library2-jar",
+            jars = ["library2.jar"],
+            exports = [":lib"],
+        )
+
+        java_library(
+            name = "javalib2",
+            srcs = ["Other.java"],
+            deps = [":library2-jar"],
+        )
+        """);
 
     JavaCompileAction javacAction =
         (JavaCompileAction) getGeneratingActionForLabel("//java/jarlib2:libjavalib2.jar");
@@ -536,23 +677,28 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
   public void testRuntimeDepsAreNotOnClasspath() throws Exception {
     scratch.file(
         "java/com/google/runtimetest/BUILD",
-        "java_import(",
-        "    name = 'import_dep',",
-        "    jars = ['import_compile.jar'],",
-        "    runtime_deps = ['import_runtime.jar'],",
-        ")",
-        "java_library(",
-        "    name = 'library_dep',",
-        "    srcs = ['library_compile.java'],",
-        ")",
-        "java_library(",
-        "    name = 'depends_on_runtimedep',",
-        "    srcs = ['dummy.java'],",
-        "    deps = [",
-        "        ':import_dep',",
-        "        ':library_dep',",
-        "    ],",
-        ")");
+        """
+        load("@rules_java//java:defs.bzl", "java_library", "java_import")
+        java_import(
+            name = "import_dep",
+            jars = ["import_compile.jar"],
+            runtime_deps = ["import_runtime.jar"],
+        )
+
+        java_library(
+            name = "library_dep",
+            srcs = ["library_compile.java"],
+        )
+
+        java_library(
+            name = "depends_on_runtimedep",
+            srcs = ["dummy.java"],
+            deps = [
+                ":import_dep",
+                ":library_dep",
+            ],
+        )
+        """);
 
     OutputFileConfiguredTarget dependsOnRuntimeDep =
         (OutputFileConfiguredTarget)
@@ -575,6 +721,7 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
         // error:
         "Label '//ji:a.jar' is duplicated in the 'jars' attribute of rule 'ji-with-dupe'",
         // build file
+        "load('@rules_java//java:defs.bzl', 'java_import')",
         "filegroup(name='jars', srcs=['a.jar'])",
         "java_import(name = 'ji-with-dupe', jars = ['a.jar', 'a.jar'])");
   }
@@ -587,6 +734,7 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
         // error:
         "in jars attribute of java_import rule //ji:ji-with-dupe-through-fg: a.jar is a duplicate",
         // build file
+        "load('@rules_java//java:defs.bzl', 'java_import')",
         "filegroup(name='jars', srcs=['a.jar'])",
         "java_import(name = 'ji-with-dupe-through-fg', jars = ['a.jar', ':jars'])");
   }
@@ -596,7 +744,7 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
     ConfiguredTarget jarLib = getConfiguredTarget("//java/jarlib:libraryjar");
     JavaCompilationArgsProvider compilationArgsProvider =
         JavaInfo.getProvider(JavaCompilationArgsProvider.class, jarLib);
-    assertThat(prettyArtifactNames(compilationArgsProvider.getRuntimeJars()))
+    assertThat(prettyArtifactNames(compilationArgsProvider.runtimeJars()))
         .containsExactly("java/jarlib/library.jar");
   }
 
@@ -607,12 +755,14 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
         scratchConfiguredTarget(
             "java/a",
             "a",
+            "load('@rules_java//java:defs.bzl', 'java_import',"
+                + " 'java_library')",
             "java_library(name='a', srcs=['A.java'], deps=[':b'])",
             "java_import(name='b', jars=['b.jar'])");
     List<String> jars =
         ActionsTestUtil.baseArtifactNames(
             JavaInfo.getProvider(JavaCompilationArgsProvider.class, lib)
-                .getTransitiveCompileTimeJars());
+                .transitiveCompileTimeJars());
     assertThat(jars).doesNotContain("b-ijar.jar");
     assertThat(jars).contains("b.jar");
   }
@@ -624,6 +774,7 @@ public class JavaImportConfiguredTargetTest extends BuildViewTestCase {
         "ugly",
         "jar",
         "java_import.exports is no longer supported; use java_import.deps instead",
+        "load('@rules_java//java:defs.bzl', 'java_import', 'java_library')",
         "java_library(name = 'dep', srcs = ['dep.java'])",
         "java_import(name = 'jar',",
         "    jars = ['dummy.jar'],",

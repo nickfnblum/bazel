@@ -27,11 +27,10 @@ import com.google.devtools.build.lib.actions.ActionExecutionException;
 import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.ArtifactExpander;
 import com.google.devtools.build.lib.actions.CommandLineExpansionException;
 import com.google.devtools.build.lib.actions.CommandLines;
 import com.google.devtools.build.lib.actions.ResourceSetOrBuilder;
-import com.google.devtools.build.lib.actions.RunfilesSupplier;
-import com.google.devtools.build.lib.actions.RunfilesSupplier.RunfilesTree;
 import com.google.devtools.build.lib.analysis.actions.SpawnAction;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.analysis.config.CoreOptions.OutputPathsMode;
@@ -86,7 +85,6 @@ public final class LtoBackendAction extends SpawnAction {
       ActionEnvironment env,
       Map<String, String> executionInfo,
       CharSequence progressMessage,
-      RunfilesSupplier runfilesSupplier,
       String mnemonic) {
     super(
         owner,
@@ -98,7 +96,6 @@ public final class LtoBackendAction extends SpawnAction {
         env,
         ImmutableMap.copyOf(executionInfo),
         progressMessage,
-        runfilesSupplier,
         mnemonic,
         OutputPathsMode.OFF);
     mandatoryInputs = inputs;
@@ -152,8 +149,7 @@ public final class LtoBackendAction extends SpawnAction {
       HashSet<PathFragment> inputPaths, ActionExecutionContext actionExecutionContext)
       throws ActionExecutionException {
     NestedSetBuilder<Artifact> bitcodeInputs = NestedSetBuilder.stableOrder();
-    ImmutableMap<PathFragment, Artifact> execPathToArtifact =
-        bitcodeFiles.getFilesArtifactPathMap();
+    Map<PathFragment, Artifact> execPathToArtifact = bitcodeFiles.getFilesArtifactPathMap();
     Set<PathFragment> missingInputs = new HashSet<>();
     for (PathFragment inputPath : inputPaths) {
       Optional<Artifact> maybeArtifact = getArtifactOrTreeArtifact(inputPath, execPathToArtifact);
@@ -226,7 +222,7 @@ public final class LtoBackendAction extends SpawnAction {
   }
 
   @Override
-  protected NestedSet<Artifact> getOriginalInputs() {
+  public NestedSet<Artifact> getOriginalInputs() {
     return mandatoryInputs;
   }
 
@@ -251,7 +247,7 @@ public final class LtoBackendAction extends SpawnAction {
   @Override
   protected void computeKey(
       ActionKeyContext actionKeyContext,
-      @Nullable Artifact.ArtifactExpander artifactExpander,
+      @Nullable ArtifactExpander artifactExpander,
       Fingerprint fp)
       throws InterruptedException {
     fp.addString(GUID);
@@ -261,10 +257,6 @@ public final class LtoBackendAction extends SpawnAction {
       throw new AssertionError("LtoBackendAction command line expansion cannot fail", e);
     }
     fp.addString(getMnemonic());
-    for (RunfilesTree runfilesTree : getRunfilesSupplier().getRunfilesTrees()) {
-      fp.addPath(runfilesTree.getPossiblyIncorrectExecPath());
-    }
-
     for (Artifact input : mandatoryInputs.toList()) {
       fp.addPath(input.getExecPath());
     }
@@ -310,7 +302,6 @@ public final class LtoBackendAction extends SpawnAction {
         @Nullable BuildConfigurationValue configuration,
         ImmutableMap<String, String> executionInfo,
         CharSequence progressMessage,
-        RunfilesSupplier runfilesSupplier,
         String mnemonic) {
       return new LtoBackendAction(
           inputsAndTools,
@@ -322,7 +313,6 @@ public final class LtoBackendAction extends SpawnAction {
           env,
           executionInfo,
           progressMessage,
-          runfilesSupplier,
           mnemonic);
     }
   }

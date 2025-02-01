@@ -28,8 +28,12 @@ sh_test(
         "//src/test/shell/bazel:test-deps",
         "//src/tools/remote:worker",
         "@bazel_tools//tools/bash/runfiles",
+        "@local_jdk//:jdk",  # for remote_helpers setup_localjdk_javabase
     ],
     shard_count = 5,
+    tags = [
+        "requires-network",  # for Bzlmod (apple_support)
+    ],
 )
 
 sh_test(

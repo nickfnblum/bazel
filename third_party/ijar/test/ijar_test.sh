@@ -15,16 +15,29 @@
 # TODO(bazel-team) test that modifying the source in a non-interface
 #   changing way results in the same -interface.jar.
 
+# --- begin runfiles.bash initialization v3 ---
+# Copy-pasted from the Bazel Bash runfiles library v3.
+set -uo pipefail; set +e; f=bazel_tools/tools/bash/runfiles/runfiles.bash
+source "${RUNFILES_DIR:-/dev/null}/$f" 2>/dev/null || \
+# shellcheck disable=SC1090
+  source "$(grep -sm1 "^$f " "${RUNFILES_MANIFEST_FILE:-/dev/null}" | cut -f2- -d' ')" 2>/dev/null || \
+  source "$0.runfiles/$f" 2>/dev/null || \
+  source "$(grep -sm1 "^$f " "$0.runfiles_manifest" | cut -f2- -d' ')" 2>/dev/null || \
+  source "$(grep -sm1 "^$f " "$0.exe.runfiles_manifest" | cut -f2- -d' ')" 2>/dev/null || \
+  { echo>&2 "ERROR: cannot find $f"; exit 1; }; f=; set -e
+# --- end runfiles.bash initialization v3 ---
+
 DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 ## Inputs
-JAVAC=$1
-shift
-JAVA=$1
-shift
-JAR=$1
-shift
-JAVAP=$1
+JAVABASE="$1"
+if [[ "$TEST_WORKSPACE" == "_main" ]]; then
+  # For Bazel
+  RUNFILES_JAVABASE=${JAVABASE#external/}
+else
+  # For Blaze
+  RUNFILES_JAVABASE=${TEST_WORKSPACE}/${JAVABASE}
+fi
 shift
 IJAR=$1
 shift
@@ -43,6 +56,11 @@ function cleanup() {
 }
 
 trap cleanup EXIT
+
+JAVAC=$(rlocation "$RUNFILES_JAVABASE/bin/javac")
+JAVA=$(rlocation "$RUNFILES_JAVABASE/bin/java")
+JAR=$(rlocation "$RUNFILES_JAVABASE/bin/jar")
+JAVAP=$(rlocation "$RUNFILES_JAVABASE/bin/javap")
 
 ## Tools
 # Ensure that tooling path is absolute if not in PATH.
@@ -81,6 +99,8 @@ SEALED_JAR=$IJAR_SRCDIR/test/sealed/sealed.jar
 SEALED_IJAR=$TEST_TMPDIR/sealed_interface.jar
 SOURCEDEBUGEXT_JAR=$IJAR_SRCDIR/test/source_debug_extension.jar
 SOURCEDEBUGEXT_IJAR=$TEST_TMPDIR/source_debug_extension.jar
+DUPLICATEDUNSUPPORTEDATTRIBUTE_JAR=$IJAR_SRCDIR/test/duplicated_unsupported_attribute.jar
+DUPLICATEDUNSUPPORTEDATTRIBUTE_IJAR=$TEST_TMPDIR/duplicated_unsupported_attribute.jar
 CENTRAL_DIR_LARGEST_REGULAR=$IJAR_SRCDIR/test/largest_regular.jar
 CENTRAL_DIR_SMALLEST_ZIP64=$IJAR_SRCDIR/test/smallest_zip64.jar
 CENTRAL_DIR_ZIP64=$IJAR_SRCDIR/test/definitely_zip64.jar
@@ -573,6 +593,12 @@ function test_source_debug_extension_attribute() {
   $JAVAP -classpath $SOURCEDEBUGEXT_IJAR -v sourcedebugextension.Test >& $TEST_log \
     || fail "javap failed"
   expect_not_log "SourceDebugExtension" "SourceDebugExtension preserved!"
+}
+
+function test_duplicated_unsupported_attribute() {
+  # Check that unsupported attribute warnings are only emitted once
+  $IJAR $DUPLICATEDUNSUPPORTEDATTRIBUTE_JAR $DUPLICATEDUNSUPPORTEDATTRIBUTE_IJAR >& $TEST_log || fail "ijar failed"
+  expect_log_once 'skipping unknown attribute: "some_unknown_type"'
 }
 
 function test_keep_for_compile() {

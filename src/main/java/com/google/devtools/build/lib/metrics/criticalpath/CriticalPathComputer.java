@@ -24,9 +24,9 @@ import com.google.common.flogger.GoogleLogger;
 import com.google.common.flogger.StackSize;
 import com.google.devtools.build.lib.actions.Action;
 import com.google.devtools.build.lib.actions.ActionAnalysisMetadata;
+import com.google.devtools.build.lib.actions.ActionChangePrunedEvent;
 import com.google.devtools.build.lib.actions.ActionCompletionEvent;
 import com.google.devtools.build.lib.actions.ActionKeyContext;
-import com.google.devtools.build.lib.actions.ActionMiddlemanEvent;
 import com.google.devtools.build.lib.actions.ActionStartedEvent;
 import com.google.devtools.build.lib.actions.Actions;
 import com.google.devtools.build.lib.actions.AggregatedSpawnMetrics;
@@ -37,6 +37,7 @@ import com.google.devtools.build.lib.actions.SpawnExecutedEvent;
 import com.google.devtools.build.lib.actions.SpawnMetrics;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.skyframe.rewinding.ActionRewoundEvent;
+import com.google.devtools.build.skyframe.WalkableGraph;
 import java.time.Duration;
 import java.util.Comparator;
 import java.util.List;
@@ -46,6 +47,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BinaryOperator;
 import java.util.stream.Stream;
+import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
 
 /**
@@ -76,12 +78,14 @@ public class CriticalPathComputer {
   private final ConcurrentMap<Artifact, CriticalPathComponent> outputArtifactToComponent =
       Maps.newConcurrentMap();
   private final ActionKeyContext actionKeyContext;
+  @Nullable private final WalkableGraph graph;
 
   /** Maximum critical path found. */
   private final AtomicReference<CriticalPathComponent> maxCriticalPath = new AtomicReference<>();
 
-  public CriticalPathComputer(ActionKeyContext actionKeyContext) {
+  public CriticalPathComputer(ActionKeyContext actionKeyContext, @Nullable WalkableGraph graph) {
     this.actionKeyContext = actionKeyContext;
+    this.graph = graph;
   }
 
   /**
@@ -235,23 +239,6 @@ public class CriticalPathComputer {
   }
 
   /**
-   * Record a middleman action execution. Even if middleman are almost instant, we record them
-   * because they depend on other actions and we need them for constructing the critical path.
-   *
-   * <p>For some rules with incorrect configuration transitions we might get notified several times
-   * for the same middleman. This should only happen if the actions are shared.
-   */
-  @Subscribe
-  @AllowConcurrentEvents
-  public void middlemanAction(ActionMiddlemanEvent event) throws InterruptedException {
-    Action action = event.getAction();
-    CriticalPathComponent component =
-        tryAddComponent(createComponent(action, event.getNanoTimeStart()));
-    finalizeActionStat(
-        event.getNanoTimeStart(), event.getNanoTimeFinish(), action, component, "middleman action");
-  }
-
-  /**
    * Try to add the component to the map of critical path components. If there is an existing
    * component for its primary output it uses that to update the rest of the outputs.
    *
@@ -319,13 +306,30 @@ public class CriticalPathComputer {
    */
   @Subscribe
   @AllowConcurrentEvents
-  public void actionComplete(ActionCompletionEvent event) {
+  public void actionComplete(ActionCompletionEvent event) throws InterruptedException {
     Action action = event.getAction();
     CriticalPathComponent component =
         Preconditions.checkNotNull(
             outputArtifactToComponent.get(action.getPrimaryOutput()), action);
     finalizeActionStat(
         event.getRelativeActionStartTimeNanos(), event.getFinishTimeNanos(), action, component, "");
+  }
+
+  @Subscribe
+  @AllowConcurrentEvents
+  public void actionChangePruned(ActionChangePrunedEvent event) throws InterruptedException {
+    if (graph == null) {
+      return;
+    }
+
+    var actionLookupData = event.actionLookupData();
+    if (!(Actions.getAction(graph, actionLookupData) instanceof Action action)) {
+      return;
+    }
+
+    var component = tryAddComponent(createComponent(action, event.finishTimeNanos()));
+    finalizeActionStat(
+        event.finishTimeNanos(), event.finishTimeNanos(), action, component, "change pruned");
   }
 
   /**
@@ -372,6 +376,7 @@ public class CriticalPathComputer {
   private void addArtifactDependency(
       CriticalPathComponent actionStats, Artifact input, long componentFinishNanos) {
     CriticalPathComponent depComponent = outputArtifactToComponent.get(input);
+
     // Typically, the dep component should already be finished since its output was used as an input
     // for a just-completed action. However, we tolerate it still running for (a) action rewinding
     // and (b) the rare case that an action depending on a previously-cached shared action sees a

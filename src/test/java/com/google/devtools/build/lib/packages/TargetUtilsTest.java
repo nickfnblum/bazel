@@ -42,9 +42,26 @@ public class TargetUtilsTest extends PackageLoadingTestCase {
   public void testFilterByTag() throws Exception {
     scratch.file(
         "tests/BUILD",
-        "sh_binary(name = 'tag1', srcs=['sh.sh'], tags=['tag1'])",
-        "sh_binary(name = 'tag2', srcs=['sh.sh'], tags=['tag2'])",
-        "sh_binary(name = 'tag1b', srcs=['sh.sh'], tags=['tag1'])");
+        """
+        load("//test_defs:foo_binary.bzl", "foo_binary")
+        foo_binary(
+            name = "tag1",
+            srcs = ["sh.sh"],
+            tags = ["tag1"],
+        )
+
+        foo_binary(
+            name = "tag2",
+            srcs = ["sh.sh"],
+            tags = ["tag2"],
+        )
+
+        foo_binary(
+            name = "tag1b",
+            srcs = ["sh.sh"],
+            tags = ["tag1"],
+        )
+        """);
 
     Target tag1 = getTarget("//tests:tag1");
     Target tag2 = getTarget("//tests:tag2");
@@ -83,9 +100,32 @@ public class TargetUtilsTest extends PackageLoadingTestCase {
   public void testExecutionInfo() throws Exception {
     scratch.file(
         "tests/BUILD",
-        "sh_binary(name = 'tag1', srcs=['sh.sh'], tags=['supports-workers', 'no-cache'])",
-        "sh_binary(name = 'tag2', srcs=['sh.sh'], tags=['disable-local-prefetch'])",
-        "sh_binary(name = 'tag1b', srcs=['sh.sh'], tags=['local', 'cpu:4'])");
+        """
+        load("//test_defs:foo_binary.bzl", "foo_binary")
+        foo_binary(
+            name = "tag1",
+            srcs = ["sh.sh"],
+            tags = [
+                "no-cache",
+                "supports-workers",
+            ],
+        )
+
+        foo_binary(
+            name = "tag2",
+            srcs = ["sh.sh"],
+            tags = ["disable-local-prefetch"],
+        )
+
+        foo_binary(
+            name = "tag1b",
+            srcs = ["sh.sh"],
+            tags = [
+                "cpu:4",
+                "local",
+            ],
+        )
+        """);
 
     Rule tag1 = (Rule) getTarget("//tests:tag1");
     Rule tag2 = (Rule) getTarget("//tests:tag2");
@@ -103,7 +143,8 @@ public class TargetUtilsTest extends PackageLoadingTestCase {
   public void testExecutionInfo_withPrefixSupports() throws Exception {
     scratch.file(
         "tests/BUILD",
-        "sh_binary(name = 'with-prefix-supports', srcs=['sh.sh'], tags=['supports-workers',"
+        "load('//test_defs:foo_binary.bzl', 'foo_binary')",
+        "foo_binary(name = 'with-prefix-supports', srcs=['sh.sh'], tags=['supports-workers',"
             + " 'supports-whatever', 'my-tag'])");
 
     Rule withSupportsPrefix = (Rule) getTarget("//tests:with-prefix-supports");
@@ -116,7 +157,8 @@ public class TargetUtilsTest extends PackageLoadingTestCase {
   public void testExecutionInfo_withPrefixDisable() throws Exception {
     scratch.file(
         "tests/BUILD",
-        "sh_binary(name = 'with-prefix-disable', srcs=['sh.sh'], tags=['disable-local-prefetch',"
+        "load('//test_defs:foo_binary.bzl', 'foo_binary')",
+        "foo_binary(name = 'with-prefix-disable', srcs=['sh.sh'], tags=['disable-local-prefetch',"
             + " 'disable-something-else', 'another-tag'])");
 
     Rule withDisablePrefix = (Rule) getTarget("//tests:with-prefix-disable");
@@ -130,7 +172,8 @@ public class TargetUtilsTest extends PackageLoadingTestCase {
   public void testExecutionInfo_withPrefixNo() throws Exception {
     scratch.file(
         "tests/BUILD",
-        "sh_binary(name = 'with-prefix-no', srcs=['sh.sh'], tags=['no-remote-imaginary-flag',"
+        "load('//test_defs:foo_binary.bzl', 'foo_binary')",
+        "foo_binary(name = 'with-prefix-no', srcs=['sh.sh'], tags=['no-remote-imaginary-flag',"
             + " 'no-sandbox', 'unknown'])");
 
     Rule withNoPrefix = (Rule) getTarget("//tests:with-prefix-no");
@@ -143,7 +186,8 @@ public class TargetUtilsTest extends PackageLoadingTestCase {
   public void testExecutionInfo_withPrefixRequires() throws Exception {
     scratch.file(
         "tests/BUILD",
-        "sh_binary(name = 'with-prefix-requires', srcs=['sh.sh'], tags=['requires-network',"
+        "load('//test_defs:foo_binary.bzl', 'foo_binary')",
+        "foo_binary(name = 'with-prefix-requires', srcs=['sh.sh'], tags=['requires-network',"
             + " 'requires-sunlight', 'test-only'])");
 
     Rule withRequiresPrefix = (Rule) getTarget("//tests:with-prefix-requires");
@@ -156,7 +200,8 @@ public class TargetUtilsTest extends PackageLoadingTestCase {
   public void testExecutionInfo_withPrefixBlock() throws Exception {
     scratch.file(
         "tests/BUILD",
-        "sh_binary(name = 'with-prefix-block', srcs=['sh.sh'], tags=['block-some-feature',"
+        "load('//test_defs:foo_binary.bzl', 'foo_binary')",
+        "foo_binary(name = 'with-prefix-block', srcs=['sh.sh'], tags=['block-some-feature',"
             + " 'block-network', 'wrong-tag'])");
 
     Rule withBlockPrefix = (Rule) getTarget("//tests:with-prefix-block");
@@ -169,7 +214,8 @@ public class TargetUtilsTest extends PackageLoadingTestCase {
   public void testExecutionInfo_withPrefixCpu() throws Exception {
     scratch.file(
         "tests/BUILD",
-        "sh_binary(name = 'with-prefix-cpu', srcs=['sh.sh'], tags=['cpu:123', 'wrong-tag'])");
+        "load('//test_defs:foo_binary.bzl', 'foo_binary')",
+        "foo_binary(name = 'with-prefix-cpu', srcs=['sh.sh'], tags=['cpu:123', 'wrong-tag'])");
 
     Rule withCpuPrefix = (Rule) getTarget("//tests:with-prefix-cpu");
 
@@ -181,7 +227,8 @@ public class TargetUtilsTest extends PackageLoadingTestCase {
   public void testExecutionInfo_withLocalTag() throws Exception {
     scratch.file(
         "tests/BUILD",
-        "sh_binary(name = 'with-local-tag', srcs=['sh.sh'], tags=['local', 'some-tag'])");
+        "load('//test_defs:foo_binary.bzl', 'foo_binary')",
+        "foo_binary(name = 'with-local-tag', srcs=['sh.sh'], tags=['local', 'some-tag'])");
 
     Rule withLocal = (Rule) getTarget("//tests:with-local-tag");
 
@@ -191,7 +238,10 @@ public class TargetUtilsTest extends PackageLoadingTestCase {
 
   @Test
   public void testFilteredExecutionInfo_fromUncheckedExecRequirements() throws Exception {
-    scratch.file("tests/BUILD", "sh_binary(name = 'no-tag', srcs=['sh.sh'])");
+    scratch.file(
+        "tests/BUILD",
+        "load('//test_defs:foo_binary.bzl', 'foo_binary')",
+        "foo_binary(name = 'no-tag', srcs=['sh.sh'])");
 
     Rule noTag = (Rule) getTarget("//tests:no-tag");
 
@@ -216,7 +266,10 @@ public class TargetUtilsTest extends PackageLoadingTestCase {
   @Test
   public void testFilteredExecutionInfo_fromUncheckedExecRequirements_withWorkerKeyMnemonic()
       throws Exception {
-    scratch.file("tests/BUILD", "sh_binary(name = 'no-tag', srcs=['sh.sh'])");
+    scratch.file(
+        "tests/BUILD",
+        "load('//test_defs:foo_binary.bzl', 'foo_binary')",
+        "foo_binary(name = 'no-tag', srcs=['sh.sh'])");
 
     Rule noTag = (Rule) getTarget("//tests:no-tag");
 
@@ -236,7 +289,8 @@ public class TargetUtilsTest extends PackageLoadingTestCase {
   public void testFilteredExecutionInfo() throws Exception {
     scratch.file(
         "tests/BUILD",
-        "sh_binary(name = 'tag1', srcs=['sh.sh'], tags=['supports-workers', 'no-cache'])");
+        "load('//test_defs:foo_binary.bzl', 'foo_binary')",
+        "foo_binary(name = 'tag1', srcs=['sh.sh'], tags=['supports-workers', 'no-cache'])");
     Rule tag1 = (Rule) getTarget("//tests:tag1");
     Dict<String, String> executionRequirementsUnchecked =
         Dict.<String, String>builder().put("no-remote", "1").buildImmutable();
@@ -252,7 +306,8 @@ public class TargetUtilsTest extends PackageLoadingTestCase {
   public void testFilteredExecutionInfo_withDuplicateTags() throws Exception {
     scratch.file(
         "tests/BUILD",
-        "sh_binary(name = 'tag1', srcs=['sh.sh'], tags=['supports-workers', 'no-cache'])");
+        "load('//test_defs:foo_binary.bzl', 'foo_binary')",
+        "foo_binary(name = 'tag1', srcs=['sh.sh'], tags=['supports-workers', 'no-cache'])");
     Rule tag1 = (Rule) getTarget("//tests:tag1");
     Dict<String, String> executionRequirementsUnchecked =
         Dict.<String, String>builder().put("no-cache", "1").buildImmutable();
@@ -268,7 +323,8 @@ public class TargetUtilsTest extends PackageLoadingTestCase {
   public void testFilteredExecutionInfo_withNullUncheckedExecRequirements() throws Exception {
     scratch.file(
         "tests/BUILD",
-        "sh_binary(name = 'tag1', srcs=['sh.sh'], tags=['supports-workers', 'no-cache'])");
+        "load('//test_defs:foo_binary.bzl', 'foo_binary')",
+        "foo_binary(name = 'tag1', srcs=['sh.sh'], tags=['supports-workers', 'no-cache'])");
     Rule tag1 = (Rule) getTarget("//tests:tag1");
 
     Map<String, String> execInfo =
@@ -285,7 +341,8 @@ public class TargetUtilsTest extends PackageLoadingTestCase {
     // when --incompatible_allow_tags_propagation=false
     scratch.file(
         "tests/BUILD",
-        "sh_binary(name = 'tag1', srcs=['sh.sh'], tags=['supports-workers', 'no-cache'])");
+        "load('//test_defs:foo_binary.bzl', 'foo_binary')",
+        "foo_binary(name = 'tag1', srcs=['sh.sh'], tags=['supports-workers', 'no-cache'])");
     Rule tag1 = (Rule) getTarget("//tests:tag1");
     Dict<String, String> executionRequirementsUnchecked =
         Dict.<String, String>builder().put("no-remote", "1").buildImmutable();
@@ -303,42 +360,94 @@ public class TargetUtilsTest extends PackageLoadingTestCase {
     // TODO(anyone): remove tests here that are redundant w.r.t. the other tests in this file.
     scratch.file(
         "x/BUILD",
-        "cc_test(name = 'y',",
-        "          srcs = ['a'],",
-        "          size = 'small',",
-        "          tags = ['manual','local','exclusive'])",
-        "cc_test(name = 'z',",
-        "          srcs = ['a'],",
-        "          size = 'small',",
-        "          tags = ['othertag', 'requires-feature2'])",
-        "cc_test(name = 'k',",
-        "          srcs = ['a'],",
-        "          size = 'small',",
-        "          tags = ['requires-feature1'])",
-        "cc_test(name = 'exclusive_if_local',",
-        "          srcs = ['a'],",
-        "          size = 'small',",
-        "          tags = ['exclusive-if-local'])",
-        "cc_test(name = 'exclusive_only',",
-        "          srcs = ['a'],",
-        "          size = 'small',",
-        "          tags = ['exclusive'])",
-        "test_suite(name = 'ts',",
-        "          tests = ['z'])",
-        "cc_binary(name = 'x',",
-        "          srcs = ['a', 'b', 'c'],",
-        "          defines = ['-Da', '-Db'])",
-        "cc_binary(name = 'lib1',",
-        "          srcs = ['a', 'b', 'c'],",
-        "          linkshared = 1)",
-        "genrule(name = 'gen1',",
-        "          srcs = [],",
-        "          outs = ['t1', 't2'],",
-        "          cmd = 'my cmd')",
-        "genrule(name = 'gen2',",
-        "          srcs = ['liba.so'],",
-        "          outs = ['libnewa.so'],",
-        "          cmd = 'my cmd')");
+        """
+        cc_test(
+            name = "y",
+            size = "small",
+            srcs = ["a"],
+            tags = [
+                "exclusive",
+                "local",
+                "manual",
+            ],
+        )
+
+        cc_test(
+            name = "z",
+            size = "small",
+            srcs = ["a"],
+            tags = [
+                "othertag",
+                "requires-feature2",
+            ],
+        )
+
+        cc_test(
+            name = "k",
+            size = "small",
+            srcs = ["a"],
+            tags = ["requires-feature1"],
+        )
+
+        cc_test(
+            name = "exclusive_if_local",
+            size = "small",
+            srcs = ["a"],
+            tags = ["exclusive-if-local"],
+        )
+
+        cc_test(
+            name = "exclusive_only",
+            size = "small",
+            srcs = ["a"],
+            tags = ["exclusive"],
+        )
+
+        test_suite(
+            name = "ts",
+            tests = ["z"],
+        )
+
+        cc_binary(
+            name = "x",
+            srcs = [
+                "a",
+                "b",
+                "c",
+            ],
+            defines = [
+                "-Da",
+                "-Db",
+            ],
+        )
+
+        cc_binary(
+            name = "lib1",
+            srcs = [
+                "a",
+                "b",
+                "c",
+            ],
+            linkshared = 1,
+        )
+
+        genrule(
+            name = "gen1",
+            srcs = [],
+            outs = [
+                "t1",
+                "t2",
+            ],
+            cmd = "my cmd",
+        )
+
+        genrule(
+            name = "gen2",
+            srcs = ["liba.so"],
+            outs = ["libnewa.so"],
+            cmd = "my cmd",
+        )
+        """);
     Rule x = (Rule) getTarget("//x:x");
     assertThat(TargetUtils.isTestRule(x)).isFalse();
     Rule ts = (Rule) getTarget("//x:ts");

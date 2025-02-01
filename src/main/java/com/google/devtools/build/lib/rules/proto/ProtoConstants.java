@@ -14,9 +14,32 @@
 
 package com.google.devtools.build.lib.rules.proto;
 
+import static com.google.devtools.build.lib.skyframe.BzlLoadValue.keyForBuild;
+
+import com.google.common.collect.ImmutableList;
+import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.skyframe.BzlLoadValue;
+
+
 /** Constants used in Proto rules. */
 public final class ProtoConstants {
-  /** Default label for proto compiler. */
+
+  public static final BzlLoadValue.Key PROTO_INFO_KEY = keyForBuild(Label.parseCanonicalUnchecked("@@com_google_protobuf+//bazel/private:proto_info.bzl"));
+
+  // Two keys support either bzlmod or WORKSPACE mode of cc_shared_library
+  public static final ImmutableList<BzlLoadValue.Key> EXTERNAL_PROTO_INFO_KEYS =
+      ImmutableList.of(
+          keyForBuild(  // WORKSPACE
+              Label.parseCanonicalUnchecked(
+                  "@com_google_protobuf//bazel/private:proto_info.bzl")),
+          keyForBuild(  // bzlmod
+              Label.parseCanonicalUnchecked(
+                  "@@protobuf+//bazel/private:proto_info.bzl")));
+
+  public static final BzlLoadValue.Key PROTO_LANG_TOOLCHAIN_INFO = keyForBuild(Label.parseCanonicalUnchecked("@@com_google_protobuf+//bazel/common:proto_lang_toolchain_info.bzl"));
+  // The flags need to point to @bazel_tools, because this is a canonical repo
+  // name when either bzlmod or WORKSPACE mode is used.
+  /** Default label for proto compiler.*/
   public static final String DEFAULT_PROTOC_LABEL =  "@bazel_tools//tools/proto:protoc";
 
   /** Default label for java proto toolchains. */

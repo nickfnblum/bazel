@@ -14,10 +14,14 @@
 
 package com.google.devtools.build.lib.analysis.actions;
 
+
 import com.google.common.collect.ImmutableSet;
+import com.google.devtools.build.lib.actions.AbstractAction;
 import com.google.devtools.build.lib.actions.Action;
 import com.google.devtools.build.lib.actions.ActionKeyContext;
-import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
+import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.ArtifactExpander;
+import com.google.devtools.build.lib.actions.CommandLineExpansionException;
 import com.google.devtools.build.lib.actions.CommandLineLimits;
 import com.google.devtools.build.lib.actions.ExecutionRequirements;
 import com.google.devtools.build.lib.actions.PathMapper;
@@ -25,6 +29,7 @@ import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.analysis.config.CoreOptions;
 import com.google.devtools.build.lib.analysis.config.CoreOptions.OutputPathsMode;
+import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.util.Fingerprint;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.Map;
@@ -35,7 +40,9 @@ import javax.annotation.Nullable;
  * PathMapper}).
  */
 public final class PathMappers {
-  // TODO: Replace with a command-line flag.
+
+  // TODO: Remove actions from this list by adding ExecutionRequirements.SUPPORTS_PATH_MAPPING to
+  //  their execution info instead.
   private static final ImmutableSet<String> SUPPORTED_MNEMONICS =
       ImmutableSet.of(
           "AndroidLint",
@@ -44,8 +51,6 @@ public final class PathMappers {
           "DejetifySrcs",
           "Desugar",
           "DexBuilder",
-          "Javac",
-          "JavacTurbine",
           "Jetify",
           "JetifySrcs",
           "LinkAndroidResources",
@@ -55,27 +60,26 @@ public final class PathMappers {
           "StarlarkAARGenerator",
           "StarlarkMergeCompiledAndroidResources",
           "StarlarkRClassGenerator",
-          "Turbine",
-          "JavaResourceJar",
           "Mock action");
 
   /**
    * Actions that support path mapping should call this method from {@link
    * Action#getKey(ActionKeyContext, ArtifactExpander)}.
    *
-   * <p>Compared to {@link #create(Action, OutputPathsMode)}, this method does not flatten nested
-   * sets and thus can't result in memory regressions.
+   * <p>Compared to {@link #create}, this method does not flatten nested sets and thus can't result
+   * in memory regressions.
    *
-   * @param mnemonic the mnemonic of the action
-   * @param executionInfo the execution info of the action
    * @param outputPathsMode the value of {@link CoreOptions#outputPathsMode}
    * @param fingerprint the fingerprint to add to
    */
   public static void addToFingerprint(
       String mnemonic,
       Map<String, String> executionInfo,
+      NestedSet<Artifact> additionalArtifactsForPathMapping,
+      ActionKeyContext actionKeyContext,
       OutputPathsMode outputPathsMode,
-      Fingerprint fingerprint) {
+      Fingerprint fingerprint)
+      throws CommandLineExpansionException, InterruptedException {
     // Creating a new PathMapper instance can be expensive, but isn't needed here: Whether and
     // how path mapping applies to the action only depends on the output paths mode and the action
     // inputs, which are already part of the action key.
@@ -83,6 +87,9 @@ public final class PathMappers {
         getEffectiveOutputPathsMode(outputPathsMode, mnemonic, executionInfo);
     if (effectiveOutputPathsMode == OutputPathsMode.STRIP) {
       fingerprint.addString(StrippingPathMapper.GUID);
+      // These artifacts are not part of the actual command line or inputs, but influence the
+      // behavior of path mapping.
+      actionKeyContext.addNestedSetToFingerprint(fingerprint, additionalArtifactsForPathMapping);
     }
   }
 
@@ -99,37 +106,28 @@ public final class PathMappers {
    * <p>Note: This method flattens nested sets and should thus not be called from methods that are
    * executed in the analysis phase.
    *
-   * <p>Actions calling this method should also call {@link #addToFingerprint(String, Map,
-   * OutputPathsMode, Fingerprint)} from {@link Action#getKey(ActionKeyContext, ArtifactExpander)}
-   * to ensure correct incremental builds.
+   * <p>Actions calling this method should also call {@link #addToFingerprint} from {@link
+   * Action#getKey(ActionKeyContext, ArtifactExpander)} to ensure correct incremental builds.
    *
-   * @param action the {@link Action} for which a {@link Spawn} is to be created
+   * @param action the {@link AbstractAction} for which a {@link Spawn} is to be created
    * @param outputPathsMode the value of {@link CoreOptions#outputPathsMode}
+   * @param isStarlarkAction whether the action is a Starlark action
    * @return a {@link PathMapper} that maps paths of the action's inputs and outputs. May be {@link
    *     PathMapper#NOOP} if path mapping is not applicable to the action.
    */
-  public static PathMapper create(Action action, OutputPathsMode outputPathsMode) {
+  public static PathMapper create(
+      AbstractAction action, OutputPathsMode outputPathsMode, boolean isStarlarkAction) {
     if (getEffectiveOutputPathsMode(
             outputPathsMode, action.getMnemonic(), action.getExecutionInfo())
         != OutputPathsMode.STRIP) {
       return PathMapper.NOOP;
     }
-    return StrippingPathMapper.tryCreate(action).orElse(PathMapper.NOOP);
-  }
-
-  public static PathMapper createPathMapperForTesting(
-      Action action, OutputPathsMode outputPathsMode) {
-    if (getEffectiveOutputPathsMode(
-            outputPathsMode, action.getMnemonic(), action.getExecutionInfo())
-        != OutputPathsMode.STRIP) {
-      return PathMapper.NOOP;
-    }
-    return StrippingPathMapper.tryCreate(action).orElse(PathMapper.NOOP);
+    return StrippingPathMapper.tryCreate(action, isStarlarkAction).orElse(PathMapper.NOOP);
   }
 
   /**
-   * Helper method to simplify calling {@link #create(Action, OutputPathsMode)} for actions that
-   * store the configuration directly.
+   * Helper method to simplify calling {@link #create} for actions that store the configuration
+   * directly.
    *
    * @param configuration the configuration
    * @return the value of
@@ -142,8 +140,19 @@ public final class PathMappers {
     return configuration.getOptions().get(CoreOptions.class).outputPathsMode;
   }
 
-  private static OutputPathsMode getEffectiveOutputPathsMode(
+  /**
+   * Returns the effective {@link OutputPathsMode} for an action based on the action's mnemonic and
+   * execution info. This may return a mode other than {@link OutputPathsMode#OFF} even though path
+   * mapping will be disabled during execution due to path collisions.
+   */
+  public static OutputPathsMode getEffectiveOutputPathsMode(
       OutputPathsMode outputPathsMode, String mnemonic, Map<String, String> executionInfo) {
+    if (executionInfo.containsKey(ExecutionRequirements.LOCAL)
+        || (executionInfo.containsKey(ExecutionRequirements.NO_SANDBOX)
+            && executionInfo.containsKey(ExecutionRequirements.NO_REMOTE))) {
+      // Path mapping requires sandboxed or remote execution.
+      return OutputPathsMode.OFF;
+    }
     if (outputPathsMode == OutputPathsMode.STRIP
         && (SUPPORTED_MNEMONICS.contains(mnemonic)
             || executionInfo.containsKey(ExecutionRequirements.SUPPORTS_PATH_MAPPING))) {

@@ -14,6 +14,8 @@
 
 package com.google.devtools.build.lib.server;
 
+import static java.nio.charset.StandardCharsets.ISO_8859_1;
+
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
@@ -26,6 +28,7 @@ import com.google.devtools.build.lib.clock.Clock;
 import com.google.devtools.build.lib.runtime.BlazeCommandResult;
 import com.google.devtools.build.lib.runtime.CommandDispatcher;
 import com.google.devtools.build.lib.runtime.CommandDispatcher.LockingMode;
+import com.google.devtools.build.lib.runtime.CommandDispatcher.UiVerbosity;
 import com.google.devtools.build.lib.runtime.SafeRequestLogging;
 import com.google.devtools.build.lib.runtime.proto.InvocationPolicyOuterClass.InvocationPolicy;
 import com.google.devtools.build.lib.server.CommandManager.RunningCommand;
@@ -136,7 +139,6 @@ public class GrpcServerImpl extends CommandServerGrpc.CommandServerImplBase impl
         idleServerTasks,
         slowInterruptMessageSuffix);
   }
-
 
   @VisibleForTesting
   enum StreamType {
@@ -428,6 +430,9 @@ public class GrpcServerImpl extends CommandServerGrpc.CommandServerImplBase impl
     return server;
   }
 
+  // Suppress ErrorProne warnings for hardcoding "[::1]" and "127.0.0.1" instead of
+  // InetAddress.getLoopbackAddress().
+  @SuppressWarnings("AddressSelection")
   @Override
   public void serve() throws AbruptExitException {
     Preconditions.checkState(!serving);
@@ -561,11 +566,10 @@ public class GrpcServerImpl extends CommandServerGrpc.CommandServerImplBase impl
     ImmutableList.Builder<Pair<String, String>> startupOptions = ImmutableList.builder();
     for (StartupOption option : request.getStartupOptionsList()) {
       // UTF-8 won't do because we want to be able to pass arbitrary binary strings.
-      // Not that the internals of Bazel handle that correctly, but why not make at least this
-      // little part correct?
-      startupOptions.add(new Pair<>(
-          option.getSource().toString(StandardCharsets.ISO_8859_1),
-          option.getOption().toString(StandardCharsets.ISO_8859_1)));
+      startupOptions.add(
+          new Pair<>(
+              platformBytesToInternalString(option.getSource()),
+              platformBytesToInternalString(option.getOption())));
     }
 
     commandManager.preemptEligibleCommands();
@@ -591,12 +595,11 @@ public class GrpcServerImpl extends CommandServerGrpc.CommandServerImplBase impl
               new RpcOutputStream(command.getId(), responseCookie, StreamType.STDERR, observer));
 
       try {
-        // UTF-8 won't do because we want to be able to pass arbitrary binary strings.
-        // Not that the internals of Bazel handle that correctly, but why not make at least this
-        // little part correct?
-        ImmutableList<String> args = request.getArgList().stream()
-            .map(arg -> arg.toString(StandardCharsets.ISO_8859_1))
-            .collect(ImmutableList.toImmutableList());
+        // Transform args into Bazel's internal string representation.
+        ImmutableList<String> args =
+            request.getArgList().stream()
+                .map(GrpcServerImpl::platformBytesToInternalString)
+                .collect(ImmutableList.toImmutableList());
 
         InvocationPolicy policy = InvocationPolicyParser.parsePolicy(request.getInvocationPolicy());
         logger.atInfo().log("%s", SafeRequestLogging.getRequestLogString(args));
@@ -606,6 +609,7 @@ public class GrpcServerImpl extends CommandServerGrpc.CommandServerImplBase impl
                 args,
                 rpcOutErr,
                 request.getBlockForLock() ? LockingMode.WAIT : LockingMode.ERROR_OUT,
+                request.getQuiet() ? UiVerbosity.QUIET : UiVerbosity.NORMAL,
                 request.getClientDescription(),
                 clock.currentTimeMillis(),
                 Optional.of(startupOptions.build()),
@@ -623,13 +627,10 @@ public class GrpcServerImpl extends CommandServerGrpc.CommandServerImplBase impl
                                 .setCode(Command.Code.INVOCATION_POLICY_PARSE_FAILURE))
                         .build()));
       }
-      if (!result.stateKeptAfterBuild()) {
-        // If state was not kept, GC as soon as the server becomes idle. This ensures that weakly
-        // reachable objects are not "resurrected" on a subsequent command. See b/291641466. Without
-        // this call, a manual GC will only be triggered if the server remains idle for at least 10
-        // seconds before the next command starts.
-        command.requestEagerIdleServerCleanup();
-      }
+
+      // Record tasks to be run by IdleTaskManager. This is triggered in RunningCommand#close()
+      // (as a Closeable), as we go out of scope immediately after this.
+      command.setIdleTasks(result.getIdleTasks(), result.stateKeptAfterBuild());
     } catch (InterruptedException e) {
       result =
           BlazeCommandResult.detailedExitCode(
@@ -743,5 +744,9 @@ public class GrpcServerImpl extends CommandServerGrpc.CommandServerImplBase impl
         .setMessage(message)
         .setGrpcServer(GrpcServer.newBuilder().setCode(detailedCode))
         .build();
+  }
+
+  private static String platformBytesToInternalString(ByteString bytes) {
+    return bytes.toString(ISO_8859_1);
   }
 }

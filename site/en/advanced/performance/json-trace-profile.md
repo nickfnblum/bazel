@@ -8,14 +8,18 @@ Book: /_book.yaml
 The JSON trace profile can be very useful to quickly understand what Bazel spent
 time on during the invocation.
 
-By default, for all build-like commands and query Bazel writes such a profile to
-`command.profile.gz`. You can configure whether a profile is written with the
+By default, for all build-like commands and query, Bazel writes a profile into
+the output base named `command-$INVOCATION_ID.profile.gz`, where
+`$INVOCATION_ID` is the invocation identifier of the command. Bazel also creates
+a symlink called `command.profile.gz` in the output base that points the profile
+of the latest command. You can configure whether a profile is written with the
 [`--generate_json_trace_profile`](/reference/command-line-reference#flag--generate_json_trace_profile)
 flag, and the location it is written to with the
 [`--profile`](/docs/user-manual#profile) flag. Locations ending with `.gz` are
-compressed with GZIP. Use the flag
-[`--experimental_announce_profile_path`](/reference/command-line-reference#flag--experimental_announce_profile_path)
-to print the path to this file to the log.
+compressed with GZIP. Bazel keeps the last 5 profiles, configurable by
+[`--profiles_to_retain`](/reference/command-line-reference#flag--generate_json_trace_profile),
+in the output base by default for post-build analysis. Explicitly passing a
+profile path with `--profile` disables automatic garbage collection.
 
 ## Tools
 
@@ -46,47 +50,6 @@ You can use these keyboard controls to navigate:
 *   Press `4` for "timing" mode where you can measure the distance
     between two events.
 *   Press `?` to learn about all controls.
-
-### `bazel analyze-profile`
-
-The Bazel subcommand [`analyze-profile`](/docs/user-manual#analyze-profile)
-consumes a profile format and prints cumulative statistics for
-different task types for each build phase and an analysis of the critical path.
-
-For example, the commands
-
-```
-$ bazel build --profile=/tmp/profile.gz //path/to:target
-...
-$ bazel analyze-profile /tmp/profile.gz
-```
-
-may yield output of this form:
-
-```
-INFO: Profile created on Tue Jun 16 08:59:40 CEST 2020, build ID: 0589419c-738b-4676-a374-18f7bbc7ac23, output base: /home/johndoe/.cache/bazel/_bazel_johndoe/d8eb7a85967b22409442664d380222c0
-
-=== PHASE SUMMARY INFORMATION ===
-
-Total launch phase time         1.070 s   12.95%
-Total init phase time           0.299 s    3.62%
-Total loading phase time        0.878 s   10.64%
-Total analysis phase time       1.319 s   15.98%
-Total preparation phase time    0.047 s    0.57%
-Total execution phase time      4.629 s   56.05%
-Total finish phase time         0.014 s    0.18%
-------------------------------------------------
-Total run time                  8.260 s  100.00%
-
-Critical path (4.245 s):
-       Time Percentage   Description
-    8.85 ms    0.21%   _Ccompiler_Udeps for @local_config_cc// compiler_deps
-    3.839 s   90.44%   action 'Compiling external/com_google_protobuf/src/google/protobuf/compiler/php/php_generator.cc [for host]'
-     270 ms    6.36%   action 'Linking external/com_google_protobuf/protoc [for host]'
-    0.25 ms    0.01%   runfiles for @com_google_protobuf// protoc
-     126 ms    2.97%   action 'ProtoCompile external/com_google_protobuf/python/google/protobuf/compiler/plugin_pb2.py'
-    0.96 ms    0.02%   runfiles for //tools/aquery_differ aquery_differ
-```
 
 ### Bazel Invocation Analyzer
 
@@ -190,7 +153,7 @@ Timestamps (`ts`) and durations (`dur`) in the trace events are given in
 microseconds. The category (`cat`) is one of enum values of `ProfilerTask`.
 Note that some events are merged together if they are very short and close to
 each other; pass
-[`--noslim_json_profile`](/reference/command-line-reference#flag--slim_profile)
+[`--noslim_profile`](/reference/command-line-reference#flag--slim_profile)
 if you would like to prevent event merging.
 
 See also the

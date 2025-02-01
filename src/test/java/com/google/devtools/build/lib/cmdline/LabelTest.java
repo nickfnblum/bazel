@@ -419,6 +419,12 @@ public class LabelTest {
         .isEqualTo("@unremapped//:unremapped");
   }
 
+  @Test
+  public void testDisplayFormNullMapping() throws Exception {
+    assertThat(displayFormFor("//foo/bar:bar", null)).isEqualTo("//foo/bar:bar");
+    assertThat(displayFormFor("@@foo//bar:bar", null)).isEqualTo("@@foo//bar:bar");
+  }
+
   private static String shorthandDisplayFormFor(
       String rawLabel, RepositoryMapping repositoryMapping) throws Exception {
     return Label.parseCanonical(rawLabel).getShorthandDisplayForm(repositoryMapping);
@@ -476,20 +482,8 @@ public class LabelTest {
   }
 
   @Test
-  public void starlarkStr_ambiguous() throws Exception {
-    StarlarkSemantics semantics =
-        StarlarkSemantics.builder()
-            .setBool(BuildLanguageOptions.INCOMPATIBLE_UNAMBIGUOUS_LABEL_STRINGIFICATION, false)
-            .setBool(BuildLanguageOptions.ENABLE_BZLMOD, false)
-            .build();
-    assertThat(Starlark.str(Label.parseCanonical("//x"), semantics)).isEqualTo("//x:x");
-    assertThat(Starlark.str(Label.parseCanonical("@x//y"), semantics)).isEqualTo("@x//y:y");
-  }
-
-  @Test
   public void starlarkStr_canonicalLabelLiteral() throws Exception {
-    StarlarkSemantics semantics =
-        StarlarkSemantics.builder().setBool(BuildLanguageOptions.ENABLE_BZLMOD, true).build();
+    StarlarkSemantics semantics = StarlarkSemantics.DEFAULT;
     assertThat(Starlark.str(Label.parseCanonical("//x"), semantics)).isEqualTo("@@//x:x");
     assertThat(Starlark.str(Label.parseCanonical("@x//y"), semantics)).isEqualTo("@@x//y:y");
   }
@@ -499,7 +493,6 @@ public class LabelTest {
     StarlarkSemantics semantics =
         StarlarkSemantics.builder()
             .setBool(BuildLanguageOptions.INCOMPATIBLE_UNAMBIGUOUS_LABEL_STRINGIFICATION, false)
-            .setBool(BuildLanguageOptions.ENABLE_BZLMOD, true)
             .build();
     assertThat(Starlark.str(Label.parseCanonical("//x"), semantics)).isEqualTo("//x:x");
     assertThat(Starlark.str(Label.parseCanonical("@x//y"), semantics)).isEqualTo("@@x//y:y");

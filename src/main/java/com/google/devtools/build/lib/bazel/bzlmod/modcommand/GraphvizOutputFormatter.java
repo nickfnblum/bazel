@@ -62,7 +62,7 @@ public class GraphvizOutputFormatter extends OutputFormatter {
       String sourceId = toId(key);
 
       if (key.equals(ModuleKey.ROOT)) {
-        String rootLabel = String.format("<root> (%s@%s)", module.getName(), module.getVersion());
+        String rootLabel = String.format("<root> (%s@%s)", module.name(), module.version());
         str.append(String.format("  \"<root>\" [ label=\"%s\" ]\n", rootLabel));
       } else if (node.isTarget() || !module.isUsed()) {
         String shapeString = node.isTarget() ? "diamond" : "box";
@@ -116,12 +116,11 @@ public class GraphvizOutputFormatter extends OutputFormatter {
       return "\"<root>\"";
     }
     return String.format(
-        "\"%s@%s\"",
-        key.getName(), key.getVersion().equals(Version.EMPTY) ? "_" : key.getVersion());
+        "\"%s@%s\"", key.name(), key.version().equals(Version.EMPTY) ? "_" : key.version());
   }
 
   private String toId(ModuleExtensionId id) {
-    return id.asTargetString();
+    return id.toString();
   }
 
   private String toId(ModuleExtensionId id, String repo) {
@@ -158,7 +157,7 @@ public class GraphvizOutputFormatter extends OutputFormatter {
     if (explanation == null) {
       return "";
     }
-    String label = explanation.getResolutionReason().getLabel();
+    String label = explanation.resolutionReason().getLabel();
     if (!label.isEmpty()) {
       return String.format("label=%s", label);
     }

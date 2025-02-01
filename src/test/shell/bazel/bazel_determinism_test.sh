@@ -61,7 +61,9 @@ function hash_outputs() {
 }
 
 function test_determinism()  {
-    local workdir="${TEST_TMPDIR}/workdir"
+    # Verify that Bazel can build itself under a path with spaces and non-ASCII
+    # characters.
+    local workdir="${TEST_TMPDIR}/wo🌱rk dir"
     mkdir "${workdir}" || fail "Could not create work directory"
     cd "${workdir}" || fail "Could not change to work directory"
     unzip -q "${DISTFILE}"
@@ -69,19 +71,11 @@ function test_determinism()  {
     # Set up the maven repository properly.
     cp derived/maven/BUILD.vendor derived/maven/BUILD
 
-    # Update the hash of bazel_tools in lockfile to avoid rerunning module resolution.
-    new_hash=$(shasum -a 256 "src/MODULE.tools" | awk '{print $1}')
-    sed -i.bak "/\"bazel_tools\":/s/\"[a-f0-9]*\"/\"$new_hash\"/" MODULE.bazel.lock
-    rm MODULE.bazel.lock.bak
-
-    # Use @bazel_tools//tools/python:autodetecting_toolchain to avoid
-    # downloading python toolchain.
-
     # Build Bazel once.
     bazel \
-      --output_base="${TEST_TMPDIR}/out1" \
+      --output_base="${TEST_TMPDIR}/out 1" \
       build \
-      --extra_toolchains=@bazel_tools//tools/python:autodetecting_toolchain \
+      --extra_toolchains=@rules_python//python:autodetecting_toolchain \
       --enable_bzlmod \
       --check_direct_dependencies=error \
       --lockfile_mode=update \
@@ -94,9 +88,9 @@ function test_determinism()  {
     bazel-bin/src/bazel \
       --bazelrc="${TEST_TMPDIR}/bazelrc" \
       --install_base="${TEST_TMPDIR}/install_base2" \
-      --output_base="${TEST_TMPDIR}/out2" \
+      --output_base="${TEST_TMPDIR}/out 2" \
       build \
-      --extra_toolchains=@bazel_tools//tools/python:autodetecting_toolchain \
+      --extra_toolchains=@rules_python//python:autodetecting_toolchain \
       --enable_bzlmod \
       --check_direct_dependencies=error \
       --lockfile_mode=update \

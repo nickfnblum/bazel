@@ -11,14 +11,24 @@ filegroup(
     visibility = ["//src:__subpackages__"],
 )
 
+DUMPER_SOURCES = [
+    "Canonizer.java",
+    "Dumper.java",
+    "FieldInfoCache.java",
+    "IsomorphismKey.java",
+    "GraphDataCollector.java",
+    "GraphTraverser.java",
+]
+
 java_library(
     name = "testutils",
     testonly = 1,
     srcs = glob(
         ["*.java"],
-        exclude = [
-            "Dumper.java",
+        exclude = DUMPER_SOURCES + [
             "FakeDirectories.java",
+            "FakeInvalidationDataHelper.java",
+            "RoundTripping.java",
             "SerializationDepsUtils.java",
         ],
     ),
@@ -26,6 +36,7 @@ java_library(
         "//src/test/java/com/google/devtools/build/lib/vfs/util",  # For FileSystem modules
     ],
     deps = [
+        ":round-tripping",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization",
         "//src/main/java/com/google/devtools/build/lib/vfs",
         "//src/main/java/com/google/devtools/build/lib/vfs:pathfragment",
@@ -36,7 +47,20 @@ java_library(
         "//third_party:jsr305",
         "//third_party:junit4",
         "//third_party:truth",
-        "//third_party/protobuf:protobuf_java",
+        "@com_google_protobuf//:protobuf_java",
+    ],
+)
+
+java_library(
+    name = "round-tripping",
+    srcs = ["RoundTripping.java"],
+    deps = [
+        "//src/main/java/com/google/devtools/build/lib/skyframe/serialization",
+        "//src/main/java/com/google/devtools/build/skyframe",
+        "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
+        "//third_party:guava",
+        "//third_party:jsr305",
+        "@com_google_protobuf//:protobuf_java",
     ],
 )
 
@@ -63,9 +87,19 @@ java_library(
 
 java_library(
     name = "dumper",
-    srcs = ["Dumper.java"],
+    srcs = DUMPER_SOURCES,
     deps = [
-        "//src/main/java/com/google/devtools/build/lib/unsafe:unsafe-provider",
+        "//src/main/java/com/google/devtools/build/lib/skyframe/serialization",
         "//third_party:guava",
+        "//third_party:jsr305",
+    ],
+)
+
+java_library(
+    name = "fake_invalidation_data_helper",
+    srcs = ["FakeInvalidationDataHelper.java"],
+    deps = [
+        "//src/main/protobuf:file_invalidation_data_java_proto",
+        "@com_google_protobuf//:protobuf_java",
     ],
 )

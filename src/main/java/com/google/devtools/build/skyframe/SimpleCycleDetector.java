@@ -60,7 +60,7 @@ public class SimpleCycleDetector implements CycleDetector {
           // This node just wasn't finished when evaluation aborted -- there were no cycles below
           // it.
           checkState(
-              !evaluatorContext.keepGoing(),
+              !evaluatorContext.keepGoing(root),
               "Missing error info with keep going (root=%s, badRoots=%s)",
               root,
               badRoots);
@@ -71,7 +71,7 @@ public class SimpleCycleDetector implements CycleDetector {
             "%s was not evaluated, but was not part of a cycle",
             root);
         result.addError(root, errorInfo);
-        if (!evaluatorContext.keepGoing()) {
+        if (!evaluatorContext.keepGoing(root)) {
           return;
         }
       }
@@ -124,7 +124,7 @@ public class SimpleCycleDetector implements CycleDetector {
         if (entry.isDone()) {
           continue;
         }
-        if (!evaluatorContext.keepGoing()) {
+        if (!evaluatorContext.keepGoing(key)) {
           // in the --nokeep_going mode, we would have already returned if we'd found a cycle below
           // this node. We haven't, so there are no cycles below this node; skip further evaluation
           continue;
@@ -164,7 +164,12 @@ public class SimpleCycleDetector implements CycleDetector {
                   key,
                   directDeps,
                   Sets.difference(entry.getAllRemainingDirtyDirectDeps(), removedDeps),
+                  entry.getMaxTransitiveSourceVersion(),
                   evaluatorContext);
+          // When the environment sets a cycle node to be in error and commits afterwards, it
+          // requires all of its deps to be fetched. See `SkyFunctionEnvironment#setError()`'s
+          // JavaDoc for more details.
+          env.ensurePreviouslyRequestedDepsFetched();
         } catch (UndonePreviouslyRequestedDeps undoneDeps) {
           // All children were finished according to the CHILDREN_FINISHED sentinel, and cycle
           // detection does not do normal SkyFunction evaluation, so no restarting nor child
@@ -225,7 +230,7 @@ public class SimpleCycleDetector implements CycleDetector {
             continue;
           }
         }
-        if (evaluatorContext.keepGoing()) {
+        if (evaluatorContext.keepGoing(key)) {
           // Any children of this node that we haven't already visited are not worth visiting,
           // since this node is about to be done. Thus, the only child worth visiting is the one in
           // this cycle, the cycleChild (which may == key if this cycle is a self-edge).
@@ -301,7 +306,7 @@ public class SimpleCycleDetector implements CycleDetector {
         }
       }
     }
-    return evaluatorContext.keepGoing()
+    return evaluatorContext.keepGoing(root)
         ? checkDone(root, evaluatorContext.getGraph().get(null, Reason.CYCLE_CHECKING, root))
             .getErrorInfo()
         : null;

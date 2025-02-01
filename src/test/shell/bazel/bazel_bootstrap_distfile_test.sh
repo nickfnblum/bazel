@@ -102,8 +102,8 @@ function test_bootstrap() {
 
     JAVABASE=$(echo reduced*)
 
-    env EXTRA_BAZEL_ARGS="--tool_java_runtime_version=local_jdk" ./compile.sh \
-        || fail "Expected to be able to bootstrap bazel. If you updated MODULE.bazel, see the NOTE in that file."
+    ./compile.sh || fail "Expected to be able to bootstrap bazel.\
+ If you updated MODULE.bazel, see the NOTE in that file."
 
     ./output/bazel \
       --server_javabase=$JAVABASE --host_jvm_args=--add-opens=java.base/java.nio=ALL-UNNAMED \
@@ -131,6 +131,7 @@ default_java_toolchain(
     jacocorunner = ":dummy.jar",
     java_runtime = "@local_jdk//:jdk",
     javabuilder = [":dummy.jar"],
+    oneversion = ":dummy.jar",
     singlejar = [":dummy.jar"],
     source_version = "${JAVA_VERSION}",
     target_version = "${JAVA_VERSION}",
@@ -145,6 +146,7 @@ EOF
       --override_repository=$(cat derived/maven/MAVEN_CANONICAL_REPO_NAME)=derived/maven \
       --java_language_version=${JAVA_VERSION} --tool_java_language_version=${JAVA_VERSION} \
       --tool_java_runtime_version=local_jdk \
+      --extra_toolchains=@rules_python//python/runtime_env_toolchains:all \
       --extra_toolchains=fake_java_toolchain:all \
       src:bazel_nojdk &> "${TEST_log}" || fail "analysis with bootstrapped Bazel failed"
 }

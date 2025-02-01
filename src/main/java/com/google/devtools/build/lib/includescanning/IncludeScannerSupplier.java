@@ -62,10 +62,9 @@ public class IncludeScannerSupplier {
       if (this == other) {
         return true;
       }
-      if (!(other instanceof IncludeScannerParams)) {
+      if (!(other instanceof IncludeScannerParams that)) {
         return false;
       }
-      IncludeScannerParams that = (IncludeScannerParams) other;
       return this.quoteIncludePaths.equals(that.quoteIncludePaths)
           && this.includePaths.equals(that.includePaths)
           && this.frameworkIncludePaths.equals(that.frameworkIncludePaths);
@@ -87,6 +86,7 @@ public class IncludeScannerSupplier {
   public IncludeScannerSupplier(
       BlazeDirectories directories,
       ExecutorService includePool,
+      boolean shouldShuffle,
       ArtifactFactory artifactFactory,
       Supplier<SpawnIncludeScanner> spawnIncludeScannerSupplier,
       Path execRoot) {
@@ -109,6 +109,7 @@ public class IncludeScannerSupplier {
                     new LegacyIncludeScanner(
                         includeParser,
                         includePool,
+                        shouldShuffle,
                         includeParseCache,
                         pathCache,
                         key.quoteIncludePaths,

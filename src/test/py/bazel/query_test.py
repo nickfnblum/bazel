@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+import tempfile
 from absl.testing import absltest
 from src.test.py.bazel import test_base
 
@@ -38,96 +40,19 @@ class QueryTest(test_base.TestBase):
     self._AssertQueryOutput('deps(//foo:top-rule, 1)', '//foo:top-rule',
                             '//foo:dep-rule')
 
-  def testQueryFilesUsedByRepositoryRules(self):
+  def testQueryWithDifferentOutputBaseAfterBuilding(self):
+    output_base = tempfile.mkdtemp(dir=os.getenv('TEST_TMPDIR'))
+
     self.ScratchFile('MODULE.bazel')
-    self._AssertQueryOutputContains(
-        "kind('source file', deps(//external:*))",
-        '@bazel_tools//tools/genrule:genrule-setup.sh',
+    self.ScratchFile(
+        'BUILD',
+        [
+            'py_binary(name="a", srcs=["a.py"])',
+        ],
     )
-
-  def testBuildFilesForExternalRepos_Simple(self):
-    self.ScratchFile('MODULE.bazel')
-    self.ScratchFile('WORKSPACE', [
-        'load("//:deps.bzl", "repos")',
-        'repos()',
-    ])
-    self.ScratchFile('BUILD.bazel')
-    self.ScratchFile('deps.bzl', [
-        'def repos():',
-        '    native.new_local_repository(',
-        '        name = "io_bazel_rules_go",',
-        '        path = ".",',
-        """        build_file_content = "exports_files(glob(['*.go']))",""",
-        '    )',
-    ])
-    self._AssertQueryOutputContains('buildfiles(//external:io_bazel_rules_go)',
-                                    '//external:WORKSPACE', '//:deps.bzl',
-                                    '//:BUILD.bazel')
-
-  def testBuildFilesForExternalRepos_IndirectLoads(self):
-    self.ScratchFile('MODULE.bazel')
-    self.ScratchFile('WORKSPACE', [
-        'load("//:deps.bzl", "repos")',
-        'repos()',
-    ])
-    self.ScratchFile('BUILD.bazel')
-    self.ScratchFile('deps.bzl', [
-        'load("//:private_deps.bzl", "other_repos")',
-        'def repos():',
-        '    native.new_local_repository(',
-        '        name = "io_bazel_rules_go",',
-        '        path = ".",',
-        """        build_file_content = "exports_files(glob(['*.go']))",""",
-        '    )',
-        '    other_repos()',
-        '',
-    ])
-    self.ScratchFile('private_deps.bzl', [
-        'def other_repos():',
-        '    native.new_local_repository(',
-        '        name = "io_bazel_rules_python",',
-        '        path = ".",',
-        """        build_file_content = "exports_files(glob(['*.py']))",""",
-        '    )',
-    ])
-
-    self._AssertQueryOutputContains(
-        'buildfiles(//external:io_bazel_rules_python)', '//external:WORKSPACE',
-        '//:deps.bzl', '//:private_deps.bzl', '//:BUILD.bazel')
-
-  def testBuildFilesForExternalRepos_NoDuplicates(self):
-    self.ScratchFile('MODULE.bazel')
-    self.ScratchFile('WORKSPACE', [
-        'load("//:deps.bzl", "repos")',
-        'repos()',
-    ])
-    self.ScratchFile('BUILD.bazel')
-    self.ScratchFile('deps.bzl', [
-        'def repos():',
-        '    native.new_local_repository(',
-        '        name = "io_bazel_rules_go",',
-        '        path = ".",',
-        """        build_file_content = "exports_files(glob(['*.go']))",""",
-        '    )',
-        '    other_repos()',
-        '',
-        'def other_repos():',
-        '    native.new_local_repository(',
-        '        name = "io_bazel_rules_python",',
-        '        path = ".",',
-        """        build_file_content = "exports_files(glob(['*.py']))",""",
-        '    )',
-    ])
-
-    _, stdout, _ = self.RunBazel(
-        ['query', 'buildfiles(//external:io_bazel_rules_python)']
-    )
-    result = set()
-    for item in stdout:
-      if not item:
-        continue
-      self.assertNotIn(item, result)
-      result.add(item)
+    self.ScratchFile('a.py')
+    self.RunBazel(['build', '//...'])
+    self.RunBazel([f'--output_base={output_base}', 'query', '//...'])
 
   def _AssertQueryOutput(self, query_expr, *expected_results):
     _, stdout, _ = self.RunBazel(['query', query_expr])

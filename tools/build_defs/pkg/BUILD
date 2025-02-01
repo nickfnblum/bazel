@@ -1,6 +1,8 @@
-# -*- coding: utf-8 -*-
+load("@rules_python//python:py_binary.bzl", "py_binary")
+load("@rules_python//python:py_library.bzl", "py_library")
+load("@rules_python//python:py_test.bzl", "py_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//tools/build_defs/pkg:pkg.bzl", "pkg_tar")
-load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
 
 licenses(["notice"])
 
@@ -13,7 +15,7 @@ filegroup(
 filegroup(
     name = "embedded_tools",
     srcs = [
-        "BUILD",
+        "BUILD.tools",
         "archive.py",
         "build_tar.py",
         "path.bzl",
@@ -108,10 +110,4 @@ sh_test(
     deps = [
         "//src/test/shell:bashunit",
     ],
-)
-
-filegroup(
-    name = "bzl_srcs",
-    srcs = glob(["*.bzl"]),
-    visibility = ["//tools/build_defs:__pkg__"],
 )

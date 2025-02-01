@@ -16,17 +16,20 @@ package com.google.devtools.build.lib.remote;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.util.concurrent.Futures.immediateFailedFuture;
+import static com.google.common.util.concurrent.Futures.immediateVoidFuture;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static com.google.devtools.build.lib.remote.util.RxFutures.toCompletable;
 import static com.google.devtools.build.lib.remote.util.RxFutures.toListenableFuture;
-import static com.google.devtools.build.lib.remote.util.RxUtils.mergeBulkTransfer;
 import static com.google.devtools.build.lib.remote.util.Utils.getFromFuture;
+import static com.google.devtools.build.lib.remote.util.Utils.mergeBulkTransfer;
+import static java.util.Objects.requireNonNull;
 
-import com.google.auto.value.AutoValue;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
 import com.google.common.flogger.GoogleLogger;
+import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.devtools.build.lib.actions.Action;
 import com.google.devtools.build.lib.actions.ActionExecutionMetadata;
@@ -37,24 +40,23 @@ import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.Artifact.SpecialArtifact;
 import com.google.devtools.build.lib.actions.Artifact.TreeFileArtifact;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
+import com.google.devtools.build.lib.actions.FileContentsProxy;
+import com.google.devtools.build.lib.actions.InputMetadataProvider;
 import com.google.devtools.build.lib.actions.cache.OutputMetadataStore;
 import com.google.devtools.build.lib.actions.cache.VirtualActionInput;
 import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.ProfilerTask;
 import com.google.devtools.build.lib.remote.common.CacheNotFoundException;
+import com.google.devtools.build.lib.remote.common.LostInputsEvent;
 import com.google.devtools.build.lib.remote.util.AsyncTaskCache;
-import com.google.devtools.build.lib.remote.util.RxUtils;
-import com.google.devtools.build.lib.remote.util.RxUtils.TransferResult;
-import com.google.devtools.build.lib.remote.util.TempPathGenerator;
+import com.google.devtools.build.lib.util.TempPathGenerator;
 import com.google.devtools.build.lib.vfs.FileSymlinkLoopException;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.OutputPermissions;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import io.reactivex.rxjava3.core.Completable;
-import io.reactivex.rxjava3.core.Flowable;
-import io.reactivex.rxjava3.core.Single;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -80,8 +82,6 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
   protected final Path execRoot;
   protected final RemoteOutputChecker remoteOutputChecker;
 
-  private final Set<ActionInput> missingActionInputs = Sets.newConcurrentHashSet();
-
   private final ActionOutputDirectoryHelper outputDirectoryHelper;
 
   /** The state of a directory tracked by {@link DirectoryTracker}, as explained below. */
@@ -89,6 +89,17 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
     PERMANENTLY_WRITABLE,
     TEMPORARILY_WRITABLE,
     OUTPUT_PERMISSIONS
+  }
+
+  /**
+   * Returns the metadata for an {@link ActionInput}.
+   *
+   * <p>This will generally call through to a {@link InputMetadataProvider} and ask for the metadata
+   * of either an input or an output artifact.
+   */
+  @VisibleForTesting
+  public interface MetadataSupplier {
+    FileArtifactValue getMetadata(ActionInput actionInput) throws IOException, InterruptedException;
   }
 
   /**
@@ -185,16 +196,15 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
   private final DirectoryTracker directoryTracker = new DirectoryTracker();
 
   /** A symlink in the output tree. */
-  @AutoValue
-  abstract static class Symlink {
-
-    abstract PathFragment getLinkExecPath();
-
-    abstract PathFragment getTargetExecPath();
+  record Symlink(PathFragment linkExecPath, PathFragment targetExecPath) {
+    Symlink {
+      requireNonNull(linkExecPath, "linkExecPath");
+      requireNonNull(targetExecPath, "targetExecPath");
+      checkArgument(!linkExecPath.equals(targetExecPath));
+    }
 
     static Symlink of(PathFragment linkExecPath, PathFragment targetExecPath) {
-      checkArgument(!linkExecPath.equals(targetExecPath));
-      return new AutoValue_AbstractActionInputPrefetcher_Symlink(linkExecPath, targetExecPath);
+      return new Symlink(linkExecPath, targetExecPath);
     }
   }
 
@@ -245,14 +255,14 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
       Path tempPath,
       PathFragment execPath,
       FileArtifactValue metadata,
-      Priority priority)
+      Priority priority,
+      Reason reason)
       throws IOException;
 
   protected void prefetchVirtualActionInput(VirtualActionInput input) throws IOException {}
 
   /**
-   * Fetches remotely stored action outputs, that are inputs to this spawn, and stores them under
-   * their path in the output base.
+   * Fetches remotely stored action outputs and stores them under their path in the output base.
    *
    * <p>The {@code inputs} may not contain any unexpanded directories.
    *
@@ -265,8 +275,34 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
   public ListenableFuture<Void> prefetchFiles(
       ActionExecutionMetadata action,
       Iterable<? extends ActionInput> inputs,
+      InputMetadataProvider metadataProvider,
+      Priority priority,
+      Reason reason) {
+    return prefetchFilesInterruptibly(
+        action, inputs, metadataProvider::getInputMetadata, priority, reason);
+  }
+
+  /**
+   * Fetches remotely stored action outputs and stores them under their path in the output base.
+   *
+   * <p>The {@code inputs} may not contain any unexpanded directories.
+   *
+   * <p>This method is safe to be called concurrently from spawn runners before running any local
+   * spawn.
+   *
+   * <p>This method is similar to #prefetchFiles() above, but note that {@code metadataSupplier} may
+   * throw {@link InterruptedException}. If it does, this method will propagate this exception in
+   * the returned future.
+   *
+   * @return a future that is completed once all downloads have finished.
+   */
+  @VisibleForTesting
+  public ListenableFuture<Void> prefetchFilesInterruptibly(
+      ActionExecutionMetadata action,
+      Iterable<? extends ActionInput> inputs,
       MetadataSupplier metadataSupplier,
-      Priority priority) {
+      Priority priority,
+      Reason reason) {
     List<ActionInput> files = new ArrayList<>();
 
     for (ActionInput input : inputs) {
@@ -283,6 +319,10 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
       files.add(input);
     }
 
+    if (files.isEmpty()) {
+      return immediateVoidFuture();
+    }
+
     // Collect the set of directories whose output permissions must be set at the end of this call.
     // This responsibility cannot lie with the downloading of an individual file, because multiple
     // files may be concurrently downloaded into the same directory within a single call to
@@ -291,54 +331,64 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
     // it must still synchronize on the output permissions having been set.
     Set<Path> dirsWithOutputPermissions = Sets.newConcurrentHashSet();
 
-    Completable prefetch =
-        mergeBulkTransfer(
-                Flowable.fromIterable(files)
-                    .flatMapSingle(
-                        input ->
-                            prefetchFile(
-                                action,
-                                dirsWithOutputPermissions,
-                                metadataSupplier,
-                                input,
-                                priority)))
-            .doOnComplete(
-                // Set output permissions on tree artifact subdirectories, matching the behavior of
-                // SkyframeActionExecutor#checkOutputs for artifacts produced by local actions.
-                () -> {
-                  for (Path dir : dirsWithOutputPermissions) {
-                    directoryTracker.setOutputPermissions(dir);
-                  }
-                });
+    // Using plain futures to avoid RxJava overheads.
+    List<ListenableFuture<Void>> transfers = new ArrayList<>(files.size());
+    try (var s = Profiler.instance().profile("compose prefetches")) {
+      for (var file : files) {
+        transfers.add(
+            prefetchFile(
+                action, dirsWithOutputPermissions, metadataSupplier, file, priority, reason));
+      }
+    }
 
-    return toListenableFuture(prefetch);
+    ListenableFuture<Void> mergedTransfer;
+    try (var s = Profiler.instance().profile("mergeBulkTransfer")) {
+      mergedTransfer = mergeBulkTransfer(transfers);
+    }
+
+    return Futures.transformAsync(
+        mergedTransfer,
+        unused -> {
+          try {
+            // Set output permissions on tree artifact subdirectories, matching the behavior of
+            // SkyframeActionExecutor#checkOutputs for artifacts produced by local actions.
+            for (Path dir : dirsWithOutputPermissions) {
+              directoryTracker.setOutputPermissions(dir);
+            }
+          } catch (IOException e) {
+            return immediateFailedFuture(e);
+          }
+          return immediateVoidFuture();
+        },
+        directExecutor());
   }
 
-  private Single<TransferResult> prefetchFile(
+  private ListenableFuture<Void> prefetchFile(
       ActionExecutionMetadata action,
       Set<Path> dirsWithOutputPermissions,
       MetadataSupplier metadataSupplier,
       ActionInput input,
-      Priority priority) {
+      Priority priority,
+      Reason reason) {
     try {
-      if (input instanceof VirtualActionInput) {
-        prefetchVirtualActionInput((VirtualActionInput) input);
-        return Single.just(TransferResult.ok());
+      if (input instanceof VirtualActionInput virtualActionInput) {
+        prefetchVirtualActionInput(virtualActionInput);
+        return immediateVoidFuture();
       }
 
       PathFragment execPath = input.getExecPath();
 
       FileArtifactValue metadata = metadataSupplier.getMetadata(input);
       if (metadata == null || !canDownloadFile(execRoot.getRelative(execPath), metadata)) {
-        return Single.just(TransferResult.ok());
+        return immediateVoidFuture();
       }
 
       @Nullable Symlink symlink = maybeGetSymlink(action, input, metadata, metadataSupplier);
 
       if (symlink != null) {
-        checkState(execPath.startsWith(symlink.getLinkExecPath()));
+        checkState(execPath.startsWith(symlink.linkExecPath()));
         execPath =
-            symlink.getTargetExecPath().getRelative(execPath.relativeTo(symlink.getLinkExecPath()));
+            symlink.targetExecPath().getRelative(execPath.relativeTo(symlink.linkExecPath()));
       }
 
       @Nullable PathFragment treeRootExecPath = maybeGetTreeRoot(action, input, metadataSupplier);
@@ -351,17 +401,16 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
               dirsWithOutputPermissions,
               input,
               metadata,
-              priority);
+              priority,
+              reason);
 
       if (symlink != null) {
         result = result.andThen(plantSymlink(symlink));
       }
 
-      return RxUtils.toTransferResult(result);
-    } catch (IOException e) {
-      return Single.just(TransferResult.error(e));
-    } catch (InterruptedException e) {
-      return Single.just(TransferResult.interrupted());
+      return toListenableFuture(result);
+    } catch (IOException | InterruptedException e) {
+      return immediateFailedFuture(e);
     }
   }
 
@@ -377,10 +426,9 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
   private PathFragment maybeGetTreeRoot(
       ActionExecutionMetadata action, ActionInput input, MetadataSupplier metadataSupplier)
       throws IOException, InterruptedException {
-    if (!(input instanceof TreeFileArtifact)) {
+    if (!(input instanceof TreeFileArtifact treeFile)) {
       return null;
     }
-    TreeFileArtifact treeFile = (TreeFileArtifact) input;
     SpecialArtifact treeArtifact = treeFile.getParent();
     FileArtifactValue treeMetadata = metadataSupplier.getMetadata(treeArtifact);
     if (treeMetadata == null) {
@@ -412,8 +460,7 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
       FileArtifactValue metadata,
       MetadataSupplier metadataSupplier)
       throws IOException, InterruptedException {
-    if (input instanceof TreeFileArtifact) {
-      TreeFileArtifact treeFile = (TreeFileArtifact) input;
+    if (input instanceof TreeFileArtifact treeFile) {
       SpecialArtifact treeArtifact = treeFile.getParent();
       FileArtifactValue treeMetadata = metadataSupplier.getMetadata(treeArtifact);
       if (treeMetadata == null) {
@@ -474,7 +521,8 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
       Set<Path> dirsWithOutputPermissions,
       ActionInput actionInput,
       FileArtifactValue metadata,
-      Priority priority) {
+      Priority priority,
+      Reason reason) {
     // If the path to be prefetched is a non-dangling symlink, prefetch its target path instead.
     // Note that this only applies to symlinks created by spawns (or, currently, with the internal
     // version of BwoB); symlinks created in-process through an ActionFileSystem should have already
@@ -519,17 +567,20 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
                                 tempPath,
                                 finalPath.relativeTo(execRoot),
                                 metadata,
-                                priority),
+                                priority,
+                                reason),
                         directExecutor())
                     .doOnComplete(
                         () -> {
-                          finalizeDownload(tempPath, finalPath, dirsWithOutputPermissions);
+                          finalizeDownload(
+                              metadata, tempPath, finalPath, dirsWithOutputPermissions);
                           alreadyDeleted.set(true);
                         })
                     .doOnError(
                         error -> {
-                          if (error instanceof CacheNotFoundException) {
-                            missingActionInputs.add(actionInput);
+                          if (error instanceof CacheNotFoundException cacheNotFoundException) {
+                            reporter.post(
+                                new LostInputsEvent(cacheNotFoundException.getMissingDigest()));
                           }
                         }));
 
@@ -544,7 +595,8 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
             }));
   }
 
-  private void finalizeDownload(Path tmpPath, Path finalPath, Set<Path> dirsWithOutputPermissions)
+  private void finalizeDownload(
+      FileArtifactValue metadata, Path tmpPath, Path finalPath, Set<Path> dirsWithOutputPermissions)
       throws IOException {
     Path parentDir = checkNotNull(finalPath.getParentDirectory());
 
@@ -574,6 +626,9 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
     // for artifacts produced by local actions.
     tmpPath.chmod(outputPermissions.getPermissionsMode());
     FileSystemUtils.moveFile(tmpPath, finalPath);
+
+    // Set the contents proxy when supported, to make future modification checks cheaper.
+    metadata.setContentsProxy(FileContentsProxy.create(finalPath.stat()));
   }
 
   private interface TaskWithTempPath {
@@ -611,11 +666,11 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
 
   private Completable plantSymlink(Symlink symlink) {
     return downloadCache.executeIfNot(
-        execRoot.getRelative(symlink.getLinkExecPath()),
+        execRoot.getRelative(symlink.linkExecPath()),
         Completable.defer(
             () -> {
-              Path link = execRoot.getRelative(symlink.getLinkExecPath());
-              Path target = execRoot.getRelative(symlink.getTargetExecPath());
+              Path link = execRoot.getRelative(symlink.linkExecPath());
+              Path target = execRoot.getRelative(symlink.targetExecPath());
               // Delete the link path if it already exists. This is the case for tree artifacts,
               // whose root directory is created before the action runs.
               link.delete();
@@ -663,7 +718,8 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
       }
 
       if (output.isTreeArtifact()) {
-        var children = outputMetadataStore.getTreeArtifactChildren((SpecialArtifact) output);
+        var children =
+            outputMetadataStore.getTreeArtifactValue((SpecialArtifact) output).getChildren();
         for (var file : children) {
           if (remoteOutputChecker.shouldDownloadOutput(file)) {
             outputsToDownload.add(file);
@@ -679,18 +735,18 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
     if (!outputsToDownload.isEmpty()) {
       try (var s = Profiler.instance().profile(ProfilerTask.REMOTE_DOWNLOAD, "Download outputs")) {
         getFromFuture(
-            prefetchFiles(
-                action, outputsToDownload, outputMetadataStore::getOutputMetadata, Priority.HIGH));
+            prefetchFilesInterruptibly(
+                action,
+                outputsToDownload,
+                outputMetadataStore::getOutputMetadata,
+                Priority.HIGH,
+                Reason.OUTPUTS));
       }
     }
   }
 
   public void flushOutputTree() throws InterruptedException {
     downloadCache.awaitInProgressTasks();
-  }
-
-  public ImmutableSet<ActionInput> getMissingActionInputs() {
-    return ImmutableSet.copyOf(missingActionInputs);
   }
 
   public RemoteOutputChecker getRemoteOutputChecker() {

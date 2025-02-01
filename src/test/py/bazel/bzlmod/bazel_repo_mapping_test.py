@@ -30,6 +30,7 @@ class BazelRepoMappingTest(test_base.TestBase):
     self.main_registry = BazelRegistry(
         os.path.join(self.registries_work_dir, 'main')
     )
+    self.main_registry.start()
     self.main_registry.createCcModule('aaa', '1.0').createCcModule(
         'aaa', '1.1'
     ).createCcModule('bbb', '1.0', {'aaa': '1.0'}).createCcModule(
@@ -42,7 +43,6 @@ class BazelRepoMappingTest(test_base.TestBase):
         [
             # In ipv6 only network, this has to be enabled.
             # 'startup --host_jvm_args=-Djava.net.preferIPv6Addresses=true',
-            'build --noenable_workspace',
             'build --registry=' + self.main_registry.getURL(),
             # We need to have BCR here to make sure built-in modules like
             # bazel_tools can work.
@@ -58,6 +58,10 @@ class BazelRepoMappingTest(test_base.TestBase):
             ),
         ],
     )
+
+  def tearDown(self):
+    self.main_registry.stop()
+    test_base.TestBase.tearDown(self)
 
   def testRunfilesRepoMappingManifest(self):
     self.main_registry.setModuleBasePath('projects')
@@ -104,9 +108,9 @@ class BazelRepoMappingTest(test_base.TestBase):
             'bazel_dep(name="foo",version="1.0")',
             'bazel_dep(name="bar",version="2.0")',
             'bazel_dep(name="bare_rule",version="1.0")',
+            'multiple_version_override(module_name="quux",versions=["1.0","2.0"])',
         ],
     )
-    self.ScratchFile('WORKSPACE.bzlmod', ['workspace(name="me_ws")'])
     self.ScratchFile(
         'BUILD',
         [
@@ -149,9 +153,7 @@ class BazelRepoMappingTest(test_base.TestBase):
     bazel_command = 'build' if self.IsWindows() else 'test'
 
     # Finally we get to build stuff!
-    self.RunBazel(
-        [bazel_command, '--enable_workspace', '//:me', '--test_output=errors']
-    )
+    self.RunBazel([bazel_command, '//:me', '--test_output=errors'])
 
     paths = ['bazel-bin/me.repo_mapping']
     if not self.IsWindows():
@@ -160,37 +162,29 @@ class BazelRepoMappingTest(test_base.TestBase):
       with open(self.Path(path), 'r') as f:
         self.assertEqual(
             f.read().strip(),
-            """,foo,foo~1.0
+            """,foo,foo+
 ,me,_main
-,me_ws,_main
-foo~1.0,foo,foo~1.0
-foo~1.0,quux,quux~2.0
-quux~2.0,quux,quux~2.0""",
+foo+,foo,foo+
+foo+,quux,quux+1.0
+quux+1.0,quux,quux+1.0""",
         )
     with open(self.Path('bazel-bin/me.runfiles_manifest')) as f:
       self.assertIn('_repo_mapping ', f.read())
 
-    self.RunBazel([
-        bazel_command,
-        '--enable_workspace',
-        '@bar//:bar',
-        '--test_output=errors',
-    ])
+    self.RunBazel([bazel_command, '@bar//:bar', '--test_output=errors'])
 
-    paths = ['bazel-bin/external/bar~2.0/bar.repo_mapping']
+    paths = ['bazel-bin/external/bar+/bar.repo_mapping']
     if not self.IsWindows():
-      paths.append('bazel-bin/external/bar~2.0/bar.runfiles/_repo_mapping')
+      paths.append('bazel-bin/external/bar+/bar.runfiles/_repo_mapping')
     for path in paths:
       with open(self.Path(path), 'r') as f:
         self.assertEqual(
             f.read().strip(),
-            """bar~2.0,bar,bar~2.0
-bar~2.0,quux,quux~2.0
-quux~2.0,quux,quux~2.0""",
+            """bar+,bar,bar+
+bar+,quux,quux+2.0
+quux+2.0,quux,quux+2.0""",
         )
-    with open(
-        self.Path('bazel-bin/external/bar~2.0/bar.runfiles_manifest')
-    ) as f:
+    with open(self.Path('bazel-bin/external/bar+/bar.runfiles_manifest')) as f:
       self.assertIn('_repo_mapping ', f.read())
 
   def testBashRunfilesLibraryRepoMapping(self):
@@ -255,7 +249,7 @@ source "${RUNFILES_DIR:-/dev/null}/$f" 2>/dev/null || \
         env_add={'RUNFILES_LIB_DEBUG': '1'},
     )
 
-  def testCppRunfilesLibraryRepoMapping(self):
+  def testLegacyCppRunfilesLibraryRepoMapping(self):
     self.main_registry.setModuleBasePath('projects')
     projects_dir = self.main_registry.projects
 
@@ -287,6 +281,58 @@ source "${RUNFILES_DIR:-/dev/null}/$f" 2>/dev/null || \
             '#include <fstream>',
             '#include "tools/cpp/runfiles/runfiles.h"',
             'using bazel::tools::cpp::runfiles::Runfiles;',
+            'int main(int argc, char** argv) {',
+            (
+                '  Runfiles* runfiles = Runfiles::Create(argv[0],'
+                ' BAZEL_CURRENT_REPOSITORY);'
+            ),
+            '  std::ifstream f1(runfiles->Rlocation(argv[1]));',
+            '  if (!f1.good()) std::exit(1);',
+            '  std::ifstream f2(runfiles->Rlocation("data/foo.txt"));',
+            '  if (!f2.good()) std::exit(2);',
+            '}',
+        ],
+    )
+
+    self.ScratchFile('MODULE.bazel', ['bazel_dep(name="test",version="1.0")'])
+
+    # Run sandboxed on Linux and macOS.
+    self.RunBazel(['test', '@test//:test', '--test_output=errors'])
+    # Run unsandboxed on all platforms.
+    self.RunBazel(['run', '@test//:test'])
+
+  def testCppRunfilesLibraryRepoMapping(self):
+    self.main_registry.setModuleBasePath('projects')
+    projects_dir = self.main_registry.projects
+
+    self.main_registry.createLocalPathModule('data', '1.0', 'data')
+    scratchFile(projects_dir.joinpath('data', 'foo.txt'), ['hello'])
+    scratchFile(
+        projects_dir.joinpath('data', 'BUILD'), ['exports_files(["foo.txt"])']
+    )
+
+    self.main_registry.createLocalPathModule(
+        'test', '1.0', 'test', {'data': '1.0', 'rules_cc': '0.0.17'}
+    )
+    scratchFile(
+        projects_dir.joinpath('test', 'BUILD'),
+        [
+            'cc_test(',
+            '    name = "test",',
+            '    srcs = ["test.cpp"],',
+            '    data = ["@data//:foo.txt"],',
+            '    args = ["$(rlocationpath @data//:foo.txt)"],',
+            '    deps = ["@rules_cc//cc/runfiles"],',
+            ')',
+        ],
+    )
+    scratchFile(
+        projects_dir.joinpath('test', 'test.cpp'),
+        [
+            '#include <cstdlib>',
+            '#include <fstream>',
+            '#include "rules_cc/cc/runfiles/runfiles.h"',
+            'using rules_cc::cc::runfiles::Runfiles;',
             'int main(int argc, char** argv) {',
             (
                 '  Runfiles* runfiles = Runfiles::Create(argv[0],'

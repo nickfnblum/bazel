@@ -610,7 +610,7 @@ cc_test(
 )
 EOF
   bazel test ${pkg}:a &> $TEST_log && fail "Build passed when we expected an error"
-  grep "Tried to set properties for non-existent exec group" $TEST_log || fail "Did not complain about unknown exec group"
+  grep "Tried to set exec_properties for non-existent exec group" $TEST_log || fail "Did not complain about unknown exec group"
 }
 
 function write_toolchains_for_exec_group_tests() {
@@ -680,7 +680,7 @@ platform(
 )
 EOF
 
-  cat >> WORKSPACE <<EOF
+  cat >> ${TOOLCHAIN_REGISTRATION_FILE} <<EOF
 register_toolchains('//${pkg}/platform:all')
 register_execution_platforms('//${pkg}/platform:all')
 EOF
@@ -774,7 +774,7 @@ toolchain(
 )
 EOF
 
-  cat >> WORKSPACE <<EOF
+  cat >> ${TOOLCHAIN_REGISTRATION_FILE} <<EOF
 register_toolchains('//${pkg}/other:all')
 EOF
 

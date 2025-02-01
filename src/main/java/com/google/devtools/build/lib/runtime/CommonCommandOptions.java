@@ -23,6 +23,7 @@ import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.common.options.Converter;
 import com.google.devtools.common.options.Converters;
 import com.google.devtools.common.options.Converters.AssignmentConverter;
+import com.google.devtools.common.options.Converters.DurationConverter;
 import com.google.devtools.common.options.EnumConverter;
 import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionDocumentationCategory;
@@ -31,6 +32,7 @@ import com.google.devtools.common.options.OptionMetadataTag;
 import com.google.devtools.common.options.OptionsBase;
 import com.google.devtools.common.options.OptionsParsingException;
 import com.google.devtools.common.options.TriState;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -104,6 +106,18 @@ public class CommonCommandOptions extends OptionsBase {
       help = "Whether profiling slow operations is always turned on")
   public boolean alwaysProfileSlowOperations;
 
+  @Option(
+      name = "experimental_install_base_gc_max_age",
+      defaultValue = "30d",
+      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+      effectTags = {OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS},
+      converter = DurationConverter.class,
+      help =
+          "How long an install base must go unused before it's eligible for garbage collection."
+              + " If nonzero, the server will attempt to garbage collect other install bases when"
+              + " idle.")
+  public Duration installBaseGcMaxAge;
+
   /** Converter for UUID. Accepts values as specified by {@link UUID#fromString(String)}. */
   public static class UUIDConverter extends Converter.Contextless<UUID> {
 
@@ -167,7 +181,7 @@ public class CommonCommandOptions extends OptionsBase {
       name = "invocation_id",
       defaultValue = "",
       converter = UUIDConverter.class,
-      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
       effectTags = {OptionEffectTag.BAZEL_MONITORING, OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION},
       help =
           "Unique identifier, in UUID format, for the command being run. If explicitly specified"
@@ -257,12 +271,23 @@ public class CommonCommandOptions extends OptionsBase {
   public boolean profileIncludeTargetLabel;
 
   @Option(
-      name = "experimental_announce_profile_path",
+      name = "experimental_profile_include_target_configuration",
       defaultValue = "false",
       documentationCategory = OptionDocumentationCategory.LOGGING,
       effectTags = {OptionEffectTag.BAZEL_MONITORING},
-      help = "If enabled, adds the JSON profile path to the log.")
-  public boolean announceProfilePath;
+      help = "Includes target configuration hash in action events' JSON profile data.")
+  public boolean profileIncludeTargetConfiguration;
+
+  @Option(
+      name = "profiles_to_retain",
+      defaultValue = "5",
+      documentationCategory = OptionDocumentationCategory.LOGGING,
+      effectTags = {OptionEffectTag.BAZEL_MONITORING},
+      help =
+          "Number of profiles to retain in the output base. If there are more than this number of"
+              + " profiles in the output base, the oldest are deleted until the total is under the"
+              + " limit.")
+  public int profilesToRetain;
 
   @Option(
       name = "profile",
@@ -271,8 +296,9 @@ public class CommonCommandOptions extends OptionsBase {
       effectTags = {OptionEffectTag.BAZEL_MONITORING},
       converter = OptionsUtils.PathFragmentConverter.class,
       help =
-          "If set, profile Bazel and write data to the specified "
-              + "file. Use bazel analyze-profile to analyze the profile.")
+          "If set, profile Bazel and write data to the specified file. See"
+              + " https://bazel.build/advanced/performance/json-trace-profile for more"
+              + " information.")
   public PathFragment profilePath;
 
   @Option(
@@ -313,7 +339,7 @@ public class CommonCommandOptions extends OptionsBase {
 
   @Option(
       name = "experimental_collect_system_network_usage",
-      defaultValue = "false",
+      defaultValue = "true",
       documentationCategory = OptionDocumentationCategory.LOGGING,
       effectTags = {OptionEffectTag.BAZEL_MONITORING},
       help = "If enabled, the profiler collects the system's network usage.")
@@ -334,6 +360,18 @@ public class CommonCommandOptions extends OptionsBase {
       effectTags = {OptionEffectTag.BAZEL_MONITORING},
       help = "If enabled, the profiler collects the Linux PSI data.")
   public boolean collectPressureStallIndicators;
+
+  @Option(
+      name = "experimental_collect_skyframe_counts_in_profiler",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.LOGGING,
+      effectTags = {OptionEffectTag.BAZEL_MONITORING},
+      help =
+          "If enabled, the profiler collects SkyFunction counts in the Skyframe graph over time for"
+              + " key function types, like configured targets and action executions. May have a"
+              + " performance hit as this visits the ENTIRE Skyframe graph at every profiling time"
+              + " unit. Do not use this flag with performance-critical measurements.")
+  public boolean collectSkyframeCounts;
 
   @Option(
       name = "memory_profile",
@@ -434,17 +472,6 @@ public class CommonCommandOptions extends OptionsBase {
       help = "Enable processing of +<file> parameters.")
   public boolean allowProjectFiles;
 
-  @Option(
-      name = "block_for_lock",
-      defaultValue = "true",
-      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-      effectTags = {OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION},
-      metadataTags = {OptionMetadataTag.HIDDEN},
-      help =
-          "If set (the default), a command will block if there is another one running. If "
-              + "unset, these commands will immediately return with an error.")
-  public boolean blockForLock;
-
   // We could accept multiple of these, in the event where there's a chain of tools that led to a
   // Bazel invocation. We would not want to expect anything from the order of these, and would need
   // to guarantee that the "label" for each command line is unique. Unless a need is demonstrated,
@@ -532,10 +559,54 @@ public class CommonCommandOptions extends OptionsBase {
               + " them.")
   public boolean heuristicallyDropNodes;
 
+  @Option(
+      name = "http_timeout_scaling",
+      defaultValue = "1.0",
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION},
+      help = "Scale all timeouts related to http downloads by the given factor")
+  public double httpTimeoutScaling;
+
+  @Option(
+      name = "http_connector_attempts",
+      defaultValue = "8",
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION},
+      help = "The maximum number of attempts for http downloads.")
+  public int httpConnectorAttempts;
+
+  @Option(
+      name = "http_connector_retry_max_timeout",
+      defaultValue = "0s",
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION},
+      help =
+          "The maximum timeout for http download retries. With a value of 0, no timeout maximum is"
+              + " defined.")
+  public Duration httpConnectorRetryMaxTimeout;
+
+  @Option(
+      name = "http_max_parallel_downloads",
+      defaultValue = "8",
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION},
+      help = "The maximum number parallel http downloads.")
+  public int httpMaxParallelDownloads;
+
   /** The option converter to check that the user can only specify legal profiler tasks. */
   public static class ProfilerTaskConverter extends EnumConverter<ProfilerTask> {
     public ProfilerTaskConverter() {
       super(ProfilerTask.class, "profiler task");
     }
   }
+
+  @Option(
+      name = "redirect_local_instrumentation_output_writes",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.LOGGING,
+      effectTags = {OptionEffectTag.BAZEL_MONITORING},
+      help =
+          "If true and supported, instrumentation output is redirected to be written locally on a"
+              + " different machine than where bazel is running on.")
+  public boolean redirectLocalInstrumentationOutputWrites;
 }

@@ -15,7 +15,6 @@ package com.google.devtools.build.lib.actions;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.devtools.build.lib.actions.RunfilesSupplier.RunfilesTree;
 import java.util.Collection;
 import java.util.Map;
 import javax.annotation.Nullable;
@@ -50,7 +49,7 @@ public final class StaticInputMetadataProvider implements InputMetadataProvider 
 
   @Nullable
   @Override
-  public FileArtifactValue getInputMetadata(ActionInput input) {
+  public FileArtifactValue getInputMetadataChecked(ActionInput input) {
     return inputToMetadata.get(input);
   }
 

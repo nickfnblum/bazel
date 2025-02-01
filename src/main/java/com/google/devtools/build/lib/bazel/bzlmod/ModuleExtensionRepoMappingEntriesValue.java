@@ -15,10 +15,12 @@
 
 package com.google.devtools.build.lib.bazel.bzlmod;
 
-import com.google.auto.value.AutoValue;
+import static java.util.Objects.requireNonNull;
+
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.skyframe.SkyFunctions;
+import com.google.devtools.build.lib.skyframe.serialization.VisibleForSerialization;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.skyframe.AbstractSkyKey;
 import com.google.devtools.build.skyframe.SkyFunctionName;
@@ -27,17 +29,17 @@ import com.google.devtools.build.skyframe.SkyValue;
 
 /** The value for {@link ModuleExtensionRepoMappingEntriesFunction}. */
 @AutoCodec
-@AutoValue
-public abstract class ModuleExtensionRepoMappingEntriesValue implements SkyValue {
-
-  public abstract ImmutableMap<String, RepositoryName> getEntries();
-
-  public abstract ModuleKey getModuleKey();
+public record ModuleExtensionRepoMappingEntriesValue(
+    ImmutableMap<String, RepositoryName> entries, ModuleKey moduleKey) implements SkyValue {
+  public ModuleExtensionRepoMappingEntriesValue {
+    requireNonNull(entries, "entries");
+    requireNonNull(moduleKey, "moduleKey");
+  }
 
   @AutoCodec.Instantiator
   public static ModuleExtensionRepoMappingEntriesValue create(
       ImmutableMap<String, RepositoryName> entries, ModuleKey moduleKey) {
-    return new AutoValue_ModuleExtensionRepoMappingEntriesValue(entries, moduleKey);
+    return new ModuleExtensionRepoMappingEntriesValue(entries, moduleKey);
   }
 
   public static ModuleExtensionRepoMappingEntriesValue.Key key(ModuleExtensionId id) {
@@ -58,9 +60,14 @@ public abstract class ModuleExtensionRepoMappingEntriesValue implements SkyValue
       super(arg);
     }
 
-    @AutoCodec.Instantiator
-    static ModuleExtensionRepoMappingEntriesValue.Key create(ModuleExtensionId arg) {
+    private static ModuleExtensionRepoMappingEntriesValue.Key create(ModuleExtensionId arg) {
       return interner.intern(new ModuleExtensionRepoMappingEntriesValue.Key(arg));
+    }
+
+    @VisibleForSerialization
+    @AutoCodec.Interner
+    static Key intern(Key key) {
+      return interner.intern(key);
     }
 
     @Override

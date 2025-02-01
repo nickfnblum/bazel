@@ -37,11 +37,12 @@ import javax.annotation.Nullable;
  */
 final class TransitionApplier
     implements StateMachine, StateMachine.ValueOrExceptionSink<TransitionException> {
-  interface ResultSink extends BuildConfigurationKeyProducer.ResultSink {
+  interface ResultSink extends BuildConfigurationKeyMapProducer.ResultSink {
     void acceptTransitionError(TransitionException e);
   }
 
   // -------------------- Input --------------------
+  private final Label label;
   private final BuildConfigurationKey fromConfiguration;
   private final ConfigurationTransition transition;
   private final StarlarkTransitionCache transitionCache;
@@ -57,6 +58,7 @@ final class TransitionApplier
   private StarlarkBuildSettingsDetailsValue buildSettingsDetailsValue;
 
   TransitionApplier(
+      Label label,
       BuildConfigurationKey fromConfiguration,
       ConfigurationTransition transition,
       StarlarkTransitionCache transitionCache,
@@ -69,6 +71,7 @@ final class TransitionApplier
     this.sink = sink;
     this.eventHandler = eventHandler;
     this.runAfter = runAfter;
+    this.label = label;
   }
 
   @Override
@@ -81,11 +84,12 @@ final class TransitionApplier
       return runAfter;
     }
     if (!doesStarlarkTransition) {
-      return new BuildConfigurationKeyProducer(
+      return new BuildConfigurationKeyMapProducer(
           this.sink,
           this.runAfter,
           transition.apply(
-              TransitionUtil.restrict(transition, fromConfiguration.getOptions()), eventHandler));
+              TransitionUtil.restrict(transition, fromConfiguration.getOptions()), eventHandler),
+          this.label);
     }
 
     ImmutableSet<Label> starlarkBuildSettings =
@@ -129,6 +133,8 @@ final class TransitionApplier
       sink.acceptTransitionError(e);
       return runAfter;
     }
-    return new BuildConfigurationKeyProducer(this.sink, this.runAfter, transitionedOptions);
+
+    return new BuildConfigurationKeyMapProducer(
+        this.sink, this.runAfter, transitionedOptions, this.label);
   }
 }

@@ -58,13 +58,14 @@ class SyntheticAttributeHashCalculator {
       Map<Attribute, Build.Attribute> serializedAttributes,
       Object extraDataForAttrHash,
       HashFunction hashFunction,
-      boolean includeAttributeSourceAspects) {
+      boolean includeAttributeSourceAspects,
+      boolean includeStarlarkRuleEnv) {
     HashingOutputStream hashingOutputStream =
         new HashingOutputStream(hashFunction, ByteStreams.nullOutputStream());
     CodedOutputStream codedOut = CodedOutputStream.newInstance(hashingOutputStream);
 
     RuleClass ruleClass = rule.getRuleClassObject();
-    if (ruleClass.isStarlark()) {
+    if (ruleClass.isStarlark() && includeStarlarkRuleEnv) {
       try {
         codedOut.writeByteArrayNoTag(
             Preconditions.checkNotNull(ruleClass.getRuleDefinitionEnvironmentDigest(), rule));
@@ -84,9 +85,8 @@ class SyntheticAttributeHashCalculator {
 
       Object valueToHash = rawAttributeMapper.getRawAttributeValue(rule, attr);
 
-      if (valueToHash instanceof ComputedDefault) {
+      if (valueToHash instanceof ComputedDefault computedDefault) {
         // ConfiguredDefaults need special handling to detect changes in evaluated values.
-        ComputedDefault computedDefault = (ComputedDefault) valueToHash;
         if (!computedDefault.dependencies().isEmpty()) {
           // TODO(b/29038463): We're skipping computed defaults that depend on other configurable
           // attributes because there currently isn't a way to evaluate such a computed default;

@@ -15,7 +15,6 @@
 package com.google.devtools.build.lib.actions;
 
 import com.google.common.collect.ImmutableList;
-import com.google.devtools.build.lib.actions.RunfilesSupplier.RunfilesTree;
 import java.io.IOException;
 import java.util.LinkedHashSet;
 import javax.annotation.Nullable;
@@ -33,11 +32,12 @@ public final class DelegatingPairInputMetadataProvider implements InputMetadataP
   }
 
   @Override
-  public FileArtifactValue getInputMetadata(ActionInput input) throws IOException {
+  public FileArtifactValue getInputMetadataChecked(ActionInput input)
+      throws IOException, MissingDepExecException {
     FileArtifactValue metadata = primary.getInputMetadata(input);
     return (metadata != null) && (metadata != FileArtifactValue.MISSING_FILE_MARKER)
         ? metadata
-        : secondary.getInputMetadata(input);
+        : secondary.getInputMetadataChecked(input);
   }
 
   @Override

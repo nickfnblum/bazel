@@ -1,4 +1,4 @@
-load("@rules_java//java:defs.bzl", "java_test")
+load("@rules_java//java:defs.bzl", "java_library", "java_test")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -10,7 +10,6 @@ filegroup(
     name = "srcs",
     testonly = 0,
     srcs = glob(["*"]) + [
-        "//src/test/java/com/google/devtools/build/lib/bazel/rules/android:srcs",
         "//src/test/java/com/google/devtools/build/lib/bazel/rules/genrule:srcs",
         "//src/test/java/com/google/devtools/build/lib/bazel/rules/java:srcs",
         "//src/test/java/com/google/devtools/build/lib/bazel/rules/python:srcs",
@@ -33,11 +32,15 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/bazel/rules",
         "//src/main/java/com/google/devtools/build/lib/cmdline",
         "//src/main/java/com/google/devtools/build/lib/packages",
+        "//src/main/java/com/google/devtools/build/lib/packages:autoload_symbols",
         "//src/main/java/com/google/devtools/build/lib/rules:core_workspace_rules",
         "//src/main/java/com/google/devtools/build/lib/rules/config",
         "//src/main/java/com/google/devtools/build/lib/rules/core",
+        "//src/main/java/com/google/devtools/build/lib/skyframe:precomputed_value",
         "//src/main/java/com/google/devtools/build/lib/util:os",
         "//src/main/java/com/google/devtools/build/lib/vfs:pathfragment",
+        "//src/main/java/com/google/devtools/build/skyframe",
+        "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
         "//src/main/java/com/google/devtools/common/options",
         "//src/test/java/com/google/devtools/build/lib/analysis/util",
         "//third_party:guava",

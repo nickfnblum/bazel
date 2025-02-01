@@ -14,7 +14,8 @@
 
 package com.google.devtools.build.lib.packages;
 
-import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
+import com.google.devtools.build.docgen.annot.GlobalMethods;
+import com.google.devtools.build.docgen.annot.GlobalMethods.Environment;
 import java.util.Map;
 import net.starlark.java.annot.Param;
 import net.starlark.java.annot.StarlarkMethod;
@@ -26,6 +27,7 @@ import net.starlark.java.eval.StarlarkThread;
  * Utility class encapsulating the standard definition of the {@code package()} function of BUILD
  * files.
  */
+@GlobalMethods(environment = Environment.BUILD)
 public class PackageCallable {
 
   protected PackageCallable() {}
@@ -34,12 +36,20 @@ public class PackageCallable {
 
   @StarlarkMethod(
       name = "package",
-      documented = false, // documented in docgen/templates/be/functions.vm
-      extraKeywords = @Param(name = "kwargs", defaultValue = "{}"),
+      doc =
+          "Declares metadata that applies to every rule in the package. It must be called at "
+              + "most once within a package (BUILD file). If called, it should be the first call "
+              + "in the BUILD file, right after the <code>load()</code> statements.",
+      extraKeywords =
+          @Param(
+              name = "kwargs",
+              doc =
+                  "See the <a href=\"${link functions}#package\"><code>package()</code></a> "
+                      + "function in the Build Encyclopedia for applicable arguments."),
       useStarlarkThread = true)
   public Object packageCallable(Map<String, Object> kwargs, StarlarkThread thread)
       throws EvalException {
-    Package.Builder pkgBuilder = PackageFactory.getContext(thread);
+    Package.Builder pkgBuilder = Package.Builder.fromOrFailAllowBuildOnly(thread, "package()");
     if (pkgBuilder.isPackageFunctionUsed()) {
       throw new EvalException("'package' can only be used once per BUILD file");
     }
@@ -50,15 +60,8 @@ public class PackageCallable {
     }
 
     PackageArgs.Builder pkgArgsBuilder = PackageArgs.builder();
-    boolean disallowDistribs =
-        thread.getSemantics().getBool(BuildLanguageOptions.INCOMPATIBLE_NO_PACKAGE_DISTRIBS);
     for (Map.Entry<String, Object> kwarg : kwargs.entrySet()) {
       String name = kwarg.getKey();
-      if (disallowDistribs && name.equals("distribs")) {
-        throw Starlark.errorf(
-            "'package(distribs=...)' is not allowed when --incompatible_no_package_distribs is"
-                + " set");
-      }
       Object rawValue = kwarg.getValue();
       processParam(name, rawValue, pkgBuilder, pkgArgsBuilder);
     }
