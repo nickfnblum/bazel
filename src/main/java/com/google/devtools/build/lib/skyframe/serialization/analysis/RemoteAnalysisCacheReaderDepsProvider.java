@@ -27,8 +27,6 @@ import javax.annotation.Nullable;
 public interface RemoteAnalysisCacheReaderDepsProvider {
   RemoteAnalysisCacheMode mode();
 
-  boolean isRetrievalEnabled();
-
   /**
    * Returns the string distinguisher to invalidate SkyValues, in addition to the corresponding
    * SkyKey.
