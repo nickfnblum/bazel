@@ -42,7 +42,7 @@ public interface FingerprintValueStore {
       ImmutableList<DecimalBucketer.Bucket> getBatchLatencyMicros,
       ImmutableList<DecimalBucketer.Bucket> setBatchLatencyMicros) {}
 
-  Stats EMPTY =
+  Stats EMPTY_STATS =
       new Stats(
           0,
           0,
@@ -58,7 +58,7 @@ public interface FingerprintValueStore {
           ImmutableList.of());
 
   default Stats getStats() {
-    return EMPTY;
+    return EMPTY_STATS;
   }
 
   default void shutdown() {}

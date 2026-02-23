@@ -63,8 +63,10 @@ public class RemoteAnalysisCachingEventListener {
 
   private final AtomicReference<FrontierNodeVersion> skyValueVersion = new AtomicReference<>();
 
-  @Nullable private FingerprintValueStore.Stats fingerprintValueStoreStats;
-  @Nullable private RemoteAnalysisCacheClient.Stats remoteAnalysisCacheStats;
+  private FingerprintValueStore.Stats fingerprintValueStoreStats =
+      FingerprintValueStore.EMPTY_STATS;
+  private RemoteAnalysisCacheClient.Stats remoteAnalysisCacheStats =
+      RemoteAnalysisCacheClient.EMPTY_STATS;
 
   @Nullable private ClientId clientId;
 
@@ -100,10 +102,9 @@ public class RemoteAnalysisCachingEventListener {
   }
 
   public void recordServiceStats(
-      @Nullable FingerprintValueStore.Stats fvsStats,
-      @Nullable RemoteAnalysisCacheClient.Stats raccStats) {
-    fingerprintValueStoreStats = fvsStats;
-    remoteAnalysisCacheStats = raccStats;
+      FingerprintValueStore.Stats fvsStats, RemoteAnalysisCacheClient.Stats raccStats) {
+    fingerprintValueStoreStats = checkNotNull(fvsStats);
+    remoteAnalysisCacheStats = checkNotNull(raccStats);
   }
 
   public FingerprintValueStore.Stats getFingerprintValueStoreStats() {

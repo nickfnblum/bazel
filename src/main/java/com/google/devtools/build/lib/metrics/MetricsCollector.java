@@ -390,37 +390,33 @@ class MetricsCollector {
 
     FingerprintValueStore.Stats fvsStats =
         env.getRemoteAnalysisCachingEventListener().getFingerprintValueStoreStats();
-    if (fvsStats != null) {
-      result
-          .setValueStoreValueBytesReceived(fvsStats.valueBytesReceived())
-          .setValueStoreValueBytesSent(fvsStats.valueBytesSent())
-          .setValueStoreKeyBytesSent(fvsStats.keyBytesSent())
-          .setValueStoreWriteOps(fvsStats.entriesWritten())
-          .setValueStoreReadOpsSuccessful(fvsStats.entriesFound())
-          .setValueStoreReadOpsNotFound(fvsStats.entriesNotFound())
-          .setValueStoreReadBatches(fvsStats.getBatches())
-          .setValueStoreWriteBatches(fvsStats.setBatches())
-          .setValueStoreReadLatencyMicros(computeDistributionProto(fvsStats.getLatencyMicros()))
-          .setValueStoreReadBatchLatencyMicros(
-              computeDistributionProto(fvsStats.getBatchLatencyMicros()))
-          .setValueStoreWriteLatencyMicros(computeDistributionProto(fvsStats.setLatencyMicros()))
-          .setValueStoreWriteBatchLatencyMicros(
-              computeDistributionProto(fvsStats.setBatchLatencyMicros()));
-    }
+    result
+        .setValueStoreValueBytesReceived(fvsStats.valueBytesReceived())
+        .setValueStoreValueBytesSent(fvsStats.valueBytesSent())
+        .setValueStoreKeyBytesSent(fvsStats.keyBytesSent())
+        .setValueStoreWriteOps(fvsStats.entriesWritten())
+        .setValueStoreReadOpsSuccessful(fvsStats.entriesFound())
+        .setValueStoreReadOpsNotFound(fvsStats.entriesNotFound())
+        .setValueStoreReadBatches(fvsStats.getBatches())
+        .setValueStoreWriteBatches(fvsStats.setBatches())
+        .setValueStoreReadLatencyMicros(computeDistributionProto(fvsStats.getLatencyMicros()))
+        .setValueStoreReadBatchLatencyMicros(
+            computeDistributionProto(fvsStats.getBatchLatencyMicros()))
+        .setValueStoreWriteLatencyMicros(computeDistributionProto(fvsStats.setLatencyMicros()))
+        .setValueStoreWriteBatchLatencyMicros(
+            computeDistributionProto(fvsStats.setBatchLatencyMicros()));
 
     RemoteAnalysisCacheClient.Stats raccStats =
         env.getRemoteAnalysisCachingEventListener().getRemoteAnalysisCacheStats();
-    if (raccStats != null) {
-      result
-          .setAnalysisCacheBytesReceived(raccStats.bytesReceived())
-          .setAnalysisCacheKeyBytesSent(raccStats.bytesSent())
-          .setAnalysisCacheOps(raccStats.requestsSent())
-          .setAnalysisCacheBatches(raccStats.batches())
-          .setAnalysisCacheReadLatencyMicros(computeDistributionProto(raccStats.latencyMicros()))
-          .setAnalysisCacheReadBatchLatencyMicros(
-              computeDistributionProto(raccStats.batchLatencyMicros()))
-          .setMetadataLookupResult(raccStats.matchStatus());
-    }
+    result
+        .setAnalysisCacheBytesReceived(raccStats.bytesReceived())
+        .setAnalysisCacheKeyBytesSent(raccStats.bytesSent())
+        .setAnalysisCacheOps(raccStats.requestsSent())
+        .setAnalysisCacheBatches(raccStats.batches())
+        .setAnalysisCacheReadLatencyMicros(computeDistributionProto(raccStats.latencyMicros()))
+        .setAnalysisCacheReadBatchLatencyMicros(
+            computeDistributionProto(raccStats.batchLatencyMicros()))
+        .setMetadataLookupResult(raccStats.matchStatus());
 
     return result.build();
   }

@@ -1045,7 +1045,7 @@ public class BuildTool {
     }
     RemoteAnalysisCacheClient.Stats raccStats =
         dependenciesProvider.getAnalysisCacheClient() == null
-            ? null
+            ? RemoteAnalysisCacheClient.EMPTY_STATS
             : dependenciesProvider.getAnalysisCacheClient().getStats();
     env.getRemoteAnalysisCachingEventListener().recordServiceStats(fvsStats, raccStats);
   }
@@ -1059,7 +1059,9 @@ public class BuildTool {
       return;
     }
     env.getRemoteAnalysisCachingEventListener()
-        .recordServiceStats(/* fvsStats= */ null, remoteAnalysisCacheClient.getStats());
+        .recordServiceStats(
+            /* fvsStats= */ FingerprintValueStore.EMPTY_STATS,
+            remoteAnalysisCacheClient.getStats());
   }
 
   /**
@@ -1929,15 +1931,13 @@ public class BuildTool {
             .collect(joining(", "));
 
     FingerprintValueStore.Stats fvsStats = listener.getFingerprintValueStoreStats();
-    RemoteAnalysisCacheClient.Stats raccStats = listener.getRemoteAnalysisCacheStats();
-
     long bytesReceived = fvsStats.valueBytesReceived();
     long requests = fvsStats.entriesFound() + fvsStats.entriesNotFound();
 
-    if (raccStats != null) {
-      bytesReceived += raccStats.bytesReceived();
-      requests += raccStats.requestsSent();
-    }
+    RemoteAnalysisCacheClient.Stats raccStats = listener.getRemoteAnalysisCacheStats();
+    bytesReceived += raccStats.bytesReceived();
+    requests += raccStats.requestsSent();
+
     // totalRequests is already checked to be non-zero above.
     double overallHitRate = (double) totalHits / totalRequests * 100;
     env.getReporter()
