@@ -599,7 +599,7 @@ function __update_shards() {
       { echo "Invalid shard ${TEST_SHARD_INDEX}" >&2; exit 1; }
 
     IFS=$'\n' read -rd $'\0' -a TESTS < <(
-        for test in "${TESTS[@]}"; do echo "$test"; done |
+        for test in ${TESTS[@]}; do echo "$test"; done |
             awk "NR % ${TEST_TOTAL_SHARDS} == ${TEST_SHARD_INDEX}" &&
             echo -en '\0')
 
@@ -781,8 +781,8 @@ function run_suite() {
 
   __update_shards
 
-  if [[ "${#TESTS[@]}" -ne 0 ]]; then
-    for TEST_name in "${TESTS[@]}"; do
+  if [[ ${#TESTS[@]} -ne 0 ]]; then
+    for TEST_name in ${TESTS[@]}; do
       if [[ "${TESTBRIDGE_TEST_RUNNER_FAIL_FAST:-0}" == "1" && "$TEST_passed" == "false" ]]; then
         echo "Skipping test '$TEST_name' due to previous failure and --test_runner_fail_fast set." >&2
         continue

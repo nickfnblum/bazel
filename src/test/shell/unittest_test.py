@@ -616,7 +616,7 @@ run_suite "empty test suite"
 
   def test_custom_ifs_variable_finds_and_runs_test(self):
     for sharded in (False, True):
-      for ifs in (r"\t", "t"):
+      for ifs in (r"\t", ":", ","):
         with self.subTest(ifs=ifs, sharded=sharded):
           self.__custom_ifs_variable_finds_and_runs_test(ifs, sharded)
 
