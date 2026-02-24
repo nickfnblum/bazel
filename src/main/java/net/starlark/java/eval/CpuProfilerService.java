@@ -13,27 +13,11 @@
 // limitations under the License.
 package net.starlark.java.eval;
 
-import java.io.FileDescriptor;
+import com.google.devtools.build.lib.runtime.BlazeService;
 
-/** Implementation of {@link CpuProfilerNativeSupport}. */
-final class CpuProfilerNativeSupportImpl implements CpuProfilerNativeSupport {
-
-  static {
-    JNI.load();
-  }
-
-  @Override
-  public native boolean supported();
-
-  @Override
-  public native FileDescriptor createPipe();
-
-  @Override
-  public native boolean startTimer(long periodMicros);
-
-  @Override
-  public native void stopTimer();
-
-  @Override
-  public native int getThreadId();
+/** A {@link BlazeService} that provides access to {@link CpuProfilerNativeSupport}. */
+@SuppressWarnings("GoodTime")
+public interface CpuProfilerService extends BlazeService {
+  /** Returns the {@link CpuProfilerNativeSupport}. */
+  CpuProfilerNativeSupport getCpuProfilerNativeSupport();
 }

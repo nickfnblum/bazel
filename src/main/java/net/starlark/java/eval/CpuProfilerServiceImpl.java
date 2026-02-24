@@ -13,27 +13,10 @@
 // limitations under the License.
 package net.starlark.java.eval;
 
-import java.io.FileDescriptor;
-
-/** Implementation of {@link CpuProfilerNativeSupport}. */
-final class CpuProfilerNativeSupportImpl implements CpuProfilerNativeSupport {
-
-  static {
-    JNI.load();
+/** Implementation of {@link CpuProfilerService}. */
+public final class CpuProfilerServiceImpl implements CpuProfilerService {
+  @Override
+  public CpuProfilerNativeSupport getCpuProfilerNativeSupport() {
+    return new CpuProfilerNativeSupportImpl();
   }
-
-  @Override
-  public native boolean supported();
-
-  @Override
-  public native FileDescriptor createPipe();
-
-  @Override
-  public native boolean startTimer(long periodMicros);
-
-  @Override
-  public native void stopTimer();
-
-  @Override
-  public native int getThreadId();
 }

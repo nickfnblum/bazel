@@ -201,8 +201,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/standalone",
         "//src/main/java/com/google/devtools/build/lib/starlarkdebug/module",
         "//src/main/java/com/google/devtools/build/lib/worker:worker_module",
-        "//src/main/java/net/starlark/java/eval",
-        "//src/main/java/net/starlark/java/eval:cpu_profiler_native_support_impl",
+        "//src/main/java/net/starlark/java/eval:cpu_profiler_module",
         "//third_party:guava",
     ],
 )
@@ -241,6 +240,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/runtime:blaze_service",
         "//src/main/java/com/google/devtools/build/lib/skyframe:fs_events_native_deps_service_impl",
         "//src/main/java/com/google/devtools/build/lib/unix:process_utils_service_impl",
+        "//src/main/java/net/starlark/java/eval:cpu_profiler_service_impl",
         "//third_party:guava",
     ],
 )
