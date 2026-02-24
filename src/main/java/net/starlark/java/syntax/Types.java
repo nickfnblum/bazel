@@ -236,7 +236,7 @@ public final class Types {
 
     @Override
     protected boolean isComparable(StarlarkType that) {
-      return that.equals(Types.BOOL) || that.equals(Types.ANY);
+      return StarlarkType.assignableFrom(Types.BOOL, that);
     }
   }
 
@@ -274,9 +274,7 @@ public final class Types {
 
     @Override
     protected boolean isComparable(StarlarkType that) {
-      // TODO: #27370 - we are expressing "other is-consistent-subtype-of NUMERIC", which supposed
-      // to be (but currently isn't) implemented by StarlarkType.assignableFrom.
-      return that.equals(INT) || that.equals(FLOAT) || that.equals(NUMERIC) || that.equals(ANY);
+      return StarlarkType.assignableFrom(NUMERIC, that);
     }
   }
 
@@ -308,9 +306,7 @@ public final class Types {
 
     @Override
     protected boolean isComparable(StarlarkType that) {
-      // TODO: #27370 - we are expressing "other is-consistent-subtype-of NUMERIC", which supposed
-      // to be (but currently isn't) implemented by StarlarkType.assignableFrom.
-      return that.equals(INT) || that.equals(FLOAT) || that.equals(NUMERIC) || that.equals(ANY);
+      return StarlarkType.assignableFrom(NUMERIC, that);
     }
   }
 
@@ -905,6 +901,11 @@ public final class Types {
     public abstract StarlarkType getKeyType();
 
     public abstract StarlarkType getValueType();
+
+    @Override
+    public List<StarlarkType> getSupertypes() {
+      return ImmutableList.of(collection(getKeyType()));
+    }
 
     @Override
     public StarlarkType getElementType() {

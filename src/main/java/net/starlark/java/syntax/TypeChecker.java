@@ -268,7 +268,7 @@ public final class TypeChecker extends NodeVisitor {
         StarlarkType xType = infer(unop.getX());
         if (xType.equals(Types.ANY)
             || ((unop.getOperator() == TokenKind.MINUS || unop.getOperator() == TokenKind.PLUS)
-                && isNumeric(xType))
+                && StarlarkType.assignableFrom(Types.NUMERIC, xType))
             || (unop.getOperator() == TokenKind.TILDE && xType.equals(Types.INT))) {
           // Unary operators other than NOT preserve the type of their operand.
           return xType;
@@ -286,16 +286,6 @@ public final class TypeChecker extends NodeVisitor {
         return Types.ANY;
       }
     }
-  }
-
-  private static boolean isNumeric(StarlarkType type) {
-    if (type.equals(Types.INT) || type.equals(Types.FLOAT)) {
-      return true;
-    }
-    if (type instanceof Types.UnionType unionType) {
-      return unionType.getTypes().stream().allMatch(TypeChecker::isNumeric);
-    }
-    return false;
   }
 
   /**
