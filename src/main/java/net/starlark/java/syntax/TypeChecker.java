@@ -152,6 +152,9 @@ public final class TypeChecker extends NodeVisitor {
       case INDEX -> {
         return inferIndex((IndexExpression) expr);
       }
+      case SLICE -> {
+        return inferSlice((SliceExpression) expr);
+      }
       case LAMBDA -> {
         var lambda = (LambdaExpression) expr;
         StarlarkType inferedReturnType = infer(lambda.getBody());
@@ -277,7 +280,7 @@ public final class TypeChecker extends NodeVisitor {
         return Types.ANY;
       }
       default -> {
-        // TODO: #28037 - support comprehension and slice expressions.
+        // TODO: #28037 - support comprehension expressions.
         errorf(expr, "UNSUPPORTED: cannot typecheck %s expression", expr.kind());
         return Types.ANY;
       }
@@ -294,6 +297,29 @@ public final class TypeChecker extends NodeVisitor {
     return false;
   }
 
+  /**
+   * Returns the integer value of an expression if it's an integer value (or a unary expression
+   * negating an integer value) which can be exactly represented as a Java integer, or null
+   * otherwise (in particular, if the expression itself is null).
+   */
+  // TODO: #28037 - Consider allowing more complicated static expressions, e.g. binary operators on
+  // integers.
+  @Nullable
+  private static Integer getIntValueExact(@Nullable Expression expr) {
+    if (expr instanceof IntLiteral intLiteral) {
+      return intLiteral.getIntValueExact();
+    } else if (expr instanceof UnaryOperatorExpression unop
+        && unop.getOperator() == TokenKind.MINUS
+        && unop.getX() instanceof IntLiteral negatedIntLiteral) {
+      // We may want to simplify negative integer literals to be IntLiteral; see #28385.
+      Integer x = negatedIntLiteral.getIntValueExact();
+      if (x != null) {
+        return -x; // safe since x >= 0
+      }
+    }
+    return null;
+  }
+
   private StarlarkType inferIndex(IndexExpression index) {
     Expression obj = index.getObject();
     Expression key = index.getKey();
@@ -308,24 +334,25 @@ public final class TypeChecker extends NodeVisitor {
       var elementTypes = tupleType.getElementTypes();
       StarlarkType resultType = null;
       // Project out the type of the specific component if we can statically determine the index.
-      // TODO: #28037 - Consider allowing more complicated static expressions, e.g. unary
-      // (minus sign) and binary operators on integers.
-      if (key.kind() == Expression.Kind.INT_LITERAL) {
-        Integer i = ((IntLiteral) key).getIntValueExact();
-        if (i != null) {
-          if (0 <= i && i < elementTypes.size()) {
-            resultType = elementTypes.get(i);
-          } else {
-            errorf(
-                index.getLbracketLocation(),
-                "'%s' of type '%s' is indexed by integer %s, which is out-of-range",
-                obj,
-                objType,
-                i);
-            // Don't complain about uses of the result type when we don't even know what result type
-            // the user wanted.
-            return Types.ANY;
-          }
+      Integer intKey = getIntValueExact(key);
+      if (intKey != null) {
+        int i = intKey;
+        if (i < 0) {
+          // Same logic as for EvalUtils#getSequenceIndex.
+          i += elementTypes.size();
+        }
+        if (0 <= i && i < elementTypes.size()) {
+          resultType = elementTypes.get(i);
+        } else {
+          errorf(
+              index.getLbracketLocation(),
+              "'%s' of type '%s' is indexed by integer %s, which is out-of-range",
+              obj,
+              objType,
+              intKey);
+          // Don't complain about uses of the result type when we don't even know what result type
+          // the user wanted.
+          return Types.ANY;
         }
       }
       if (resultType == null) {
@@ -360,6 +387,101 @@ public final class TypeChecker extends NodeVisitor {
       errorf(index.getLbracketLocation(), "cannot index '%s' of type '%s'", obj, objType);
       return Types.ANY;
     }
+  }
+
+  private StarlarkType inferSlice(SliceExpression slice) {
+    @Nullable Integer step = getIntValueExact(slice.getStep());
+    if (step == null) {
+      step = 1;
+      if (slice.getStep() != null) {
+        StarlarkType stepType = infer(slice.getStep());
+        if (!StarlarkType.assignableFrom(Types.INT, stepType)) {
+          errorf(slice.getStep(), "got '%s' for slice step, want int", stepType);
+          return Types.ANY;
+        }
+      }
+    } else if (step == 0) {
+      errorf(slice.getStep(), "slice step cannot be zero");
+      return Types.ANY;
+    }
+    if (slice.getStart() != null) {
+      StarlarkType startType = infer(slice.getStart());
+      if (!StarlarkType.assignableFrom(Types.INT, startType)) {
+        errorf(slice.getStart(), "got '%s' for start index, want int", startType);
+        return Types.ANY;
+      }
+    }
+    if (slice.getStop() != null) {
+      StarlarkType stopType = infer(slice.getStop());
+      if (!StarlarkType.assignableFrom(Types.INT, stopType)) {
+        errorf(slice.getStop(), "got '%s' for stop index, want int", stopType);
+        return Types.ANY;
+      }
+    }
+
+    StarlarkType objType = infer(slice.getObject());
+    if (objType.equals(Types.ANY)) {
+      return Types.ANY;
+    }
+    ArrayList<StarlarkType> resultTypes = new ArrayList<>();
+    for (StarlarkType objElemType : Types.unfoldUnion(objType)) {
+      if (objElemType.equals(Types.ANY)) {
+        resultTypes.add(Types.ANY);
+      } else if (objElemType.equals(Types.STR)) {
+        resultTypes.add(Types.STR);
+      } else if (objElemType instanceof Types.TupleType tupleType) {
+        ImmutableList<StarlarkType> tupleElementTypes = tupleType.getElementTypes();
+        int len = tupleElementTypes.size();
+        @Nullable Integer start = getIntValueExact(slice.getStart());
+        @Nullable Integer stop = getIntValueExact(slice.getStop());
+        ArrayList<StarlarkType> resultTupleElementTypes = new ArrayList<>();
+        if (step != null
+            && haveExactSliceBound(slice.getStart(), start)
+            && haveExactSliceBound(slice.getStop(), stop)) {
+          if (step > 0) {
+            int startClamped = start != null ? SyntaxUtils.toSliceBound(start, len) : 0;
+            int stopClamped = stop != null ? SyntaxUtils.toSliceBound(stop, len) : len;
+            for (long i = startClamped; i < stopClamped && (int) i == i; i += step) {
+              resultTupleElementTypes.add(tupleElementTypes.get((int) i));
+            }
+          } else {
+            int startClamped =
+                start != null ? SyntaxUtils.toReverseSliceBound(start, len) : len - 1;
+            int stopClamped = stop != null ? SyntaxUtils.toReverseSliceBound(stop, len) : -1;
+            for (long i = startClamped; i > stopClamped && (int) i == i; i += step) {
+              resultTupleElementTypes.add(tupleElementTypes.get((int) i));
+            }
+          }
+          resultTypes.add(Types.tuple(ImmutableList.copyOf(resultTupleElementTypes)));
+        } else {
+          // TODO: #28037 - return tuple of indeterminate shape.
+          resultTypes.add(Types.ANY);
+        }
+      } else if (objElemType instanceof Types.AbstractSequenceType sequenceType) {
+        resultTypes.add(sequenceType);
+      } else {
+        errorf(
+            slice.getLbracketLocation(),
+            "invalid slice operand '%s' of type '%s', expected Sequence or str",
+            slice.getObject(),
+            objElemType);
+        resultTypes.add(Types.ANY);
+      }
+    }
+    return Types.union(resultTypes);
+  }
+
+  private static boolean haveExactSliceBound(
+      @Nullable Expression expr, @Nullable Integer exprIntValueExact) {
+    if (expr == null) {
+      // Bound not specified, so we know its exact value (the default value)
+      return true;
+    }
+    if (exprIntValueExact != null) {
+      // Bound is specified and is a 32-bit integer literal (or negation)
+      return true;
+    }
+    return false;
   }
 
   private StarlarkType inferCall(CallExpression call) {
@@ -733,15 +855,9 @@ public final class TypeChecker extends NodeVisitor {
   }
 
   private static StarlarkType inferTupleRepetition(Types.TupleType tuple, Expression timesExpr) {
-    if (timesExpr instanceof IntLiteral intLiteral) {
-      // TODO: #28037 - our IntLiteral is always non-negative (we parse negative integers as unary
-      // expressions). Note, however, that mypy does handle negative integers; we ought to either
-      // support negative integers in ConstantIntType if/when we introduce it, or else optimize
-      // negative integer literals to be IntLiteral (see #28385).
-      @Nullable Integer times = intLiteral.getIntValueExact();
-      if (times != null) {
-        return tuple.repeat(times);
-      }
+    @Nullable Integer times = getIntValueExact(timesExpr);
+    if (times != null) {
+      return tuple.repeat(times);
     }
     // TODO: #28037 - return tuple of indeterminate shape.
     return Types.ANY;
