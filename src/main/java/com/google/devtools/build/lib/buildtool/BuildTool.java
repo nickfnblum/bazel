@@ -1016,7 +1016,8 @@ public class BuildTool {
     env.getRemoteAnalysisCachingEventListener().recordServiceStats(fvsStats, raccStats);
   }
 
-  private void reportOnlyBailOutReason(RemoteAnalysisCacheReaderDepsProvider readerDeps) {
+  private void reportOnlyBailOutReason(RemoteAnalysisCacheReaderDepsProvider readerDeps)
+      throws InterruptedException {
     RemoteAnalysisCacheClient remoteAnalysisCacheClient = readerDeps.getAnalysisCacheClient();
     if (remoteAnalysisCacheClient == null) {
       return;
@@ -1064,7 +1065,8 @@ public class BuildTool {
   }
 
   private void tryWriteSkycacheMetadata(
-      SerializationDependenciesProvider serializationDependenciesProvider) {
+      SerializationDependenciesProvider serializationDependenciesProvider)
+      throws InterruptedException {
     String message = "No local crash but the RPC failed in the backend";
     boolean success = false;
     SkycacheMetadataParams skycacheMetadataParams =

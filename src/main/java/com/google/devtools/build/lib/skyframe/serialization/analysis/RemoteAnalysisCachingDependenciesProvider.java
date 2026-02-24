@@ -96,7 +96,7 @@ public interface RemoteAnalysisCachingDependenciesProvider {
     KeyValueWriter getFileInvalidationWriter() throws InterruptedException;
 
     @Nullable
-    RemoteAnalysisMetadataWriter getMetadataWriter();
+    RemoteAnalysisMetadataWriter getMetadataWriter() throws InterruptedException;
   }
 
   /** A stub dependencies provider for when analysis caching is disabled. */

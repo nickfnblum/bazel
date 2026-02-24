@@ -43,7 +43,7 @@ public interface RemoteAnalysisCacheReaderDepsProvider {
   /** Returns the {@link FingerprintValueService} implementation. */
   FingerprintValueService getFingerprintValueService() throws InterruptedException;
 
-  RemoteAnalysisCacheClient getAnalysisCacheClient();
+  RemoteAnalysisCacheClient getAnalysisCacheClient() throws InterruptedException;
 
   /** Returns the JSON log writer or null if this log is not enabled. */
   @Nullable
