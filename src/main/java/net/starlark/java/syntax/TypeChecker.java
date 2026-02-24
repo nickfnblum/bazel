@@ -240,9 +240,10 @@ public final class TypeChecker extends NodeVisitor {
                   // Tuple repetition is the only case where we need to examine the expressions.
                   // TODO: #28037 - We can get rid of the tuple repetition special case if we
                   // introduce ConstantIntType for integer constants.
-                  if (xElemType.equals(Types.INT) && yElemType instanceof Types.TupleType tuple) {
+                  if (StarlarkType.assignableFrom(Types.INT, xElemType)
+                      && yElemType instanceof Types.TupleType tuple) {
                     resultType = inferTupleRepetition(tuple, binop.getX());
-                  } else if (yElemType.equals(Types.INT)
+                  } else if (StarlarkType.assignableFrom(Types.INT, yElemType)
                       && xElemType instanceof Types.TupleType tuple) {
                     resultType = inferTupleRepetition(tuple, binop.getY());
                   }
@@ -329,7 +330,7 @@ public final class TypeChecker extends NodeVisitor {
     if (objType.equals(Types.ANY)) {
       return Types.ANY;
 
-    } else if (objType instanceof Types.TupleType tupleType) {
+    } else if (objType instanceof Types.FixedLengthTupleType tupleType) {
       errorIfKeyNotInt(index, objType, keyType);
       var elementTypes = tupleType.getElementTypes();
       StarlarkType resultType = null;
@@ -360,24 +361,22 @@ public final class TypeChecker extends NodeVisitor {
       }
       return resultType;
 
-      // TODO: #28043 - Broaden from List to Sequence once we have better type hierarchy support.
-    } else if (objType instanceof Types.ListType listType) {
+    } else if (objType instanceof Types.AbstractSequenceType sequenceType) {
       errorIfKeyNotInt(index, objType, keyType); // fall through on error
-      return listType.getElementType();
+      return sequenceType.getElementType();
 
-      // TODO: #28043 - Broaden from Dict to Mapping once we have better type hierarchy support.
-    } else if (objType instanceof Types.DictType dictType) {
-      if (!StarlarkType.assignableFrom(dictType.getKeyType(), keyType)) {
+    } else if (objType instanceof Types.AbstractMappingType mappingType) {
+      if (!StarlarkType.assignableFrom(mappingType.getKeyType(), keyType)) {
         errorf(
             index.getLbracketLocation(),
             "'%s' of type '%s' requires key type '%s', but got '%s'",
             obj,
             objType,
-            dictType.getKeyType(),
+            mappingType.getKeyType(),
             keyType);
         // Fall through to returning the value type.
       }
-      return dictType.getValueType();
+      return mappingType.getValueType();
 
     } else if (objType.equals(Types.STR)) {
       errorIfKeyNotInt(index, objType, keyType); // fall through on error
@@ -429,12 +428,12 @@ public final class TypeChecker extends NodeVisitor {
         resultTypes.add(Types.ANY);
       } else if (objElemType.equals(Types.STR)) {
         resultTypes.add(Types.STR);
-      } else if (objElemType instanceof Types.TupleType tupleType) {
+      } else if (objElemType instanceof Types.FixedLengthTupleType tupleType) {
         ImmutableList<StarlarkType> tupleElementTypes = tupleType.getElementTypes();
         int len = tupleElementTypes.size();
         @Nullable Integer start = getIntValueExact(slice.getStart());
         @Nullable Integer stop = getIntValueExact(slice.getStop());
-        ArrayList<StarlarkType> resultTupleElementTypes = new ArrayList<>();
+        ImmutableList.Builder<StarlarkType> resultTupleElementTypes = ImmutableList.builder();
         if (step != null
             && haveExactSliceBound(slice.getStart(), start)
             && haveExactSliceBound(slice.getStop(), stop)) {
@@ -452,10 +451,9 @@ public final class TypeChecker extends NodeVisitor {
               resultTupleElementTypes.add(tupleElementTypes.get((int) i));
             }
           }
-          resultTypes.add(Types.tuple(ImmutableList.copyOf(resultTupleElementTypes)));
+          resultTypes.add(Types.tuple(resultTupleElementTypes.build()));
         } else {
-          // TODO: #28037 - return tuple of indeterminate shape.
-          resultTypes.add(Types.ANY);
+          resultTypes.add(tupleType.toHomogeneous());
         }
       } else if (objElemType instanceof Types.AbstractSequenceType sequenceType) {
         resultTypes.add(sequenceType);
@@ -859,8 +857,7 @@ public final class TypeChecker extends NodeVisitor {
     if (times != null) {
       return tuple.repeat(times);
     }
-    // TODO: #28037 - return tuple of indeterminate shape.
-    return Types.ANY;
+    return tuple.toHomogeneous();
   }
 
   /**
