@@ -80,41 +80,9 @@ java_library(
 )
 
 java_library(
-    name = "cpu_profiler_module",
-    srcs = ["CpuProfilerModule.java"],
-    visibility = ["//src/main/java/com/google/devtools/build/lib/bazel:__pkg__"],
-    deps = [
-        ":cpu_profiler_service",
-        ":eval",
-        "//src/main/java/com/google/devtools/build/lib/runtime",
-        "//src/main/java/com/google/devtools/build/lib/runtime:blaze_service",
-        "//src/main/java/com/google/devtools/common/options",
-    ],
-)
-
-java_library(
-    name = "cpu_profiler_service",
-    srcs = ["CpuProfilerService.java"],
-    deps = [
-        ":cpu_profiler_native_support",
-        "//src/main/java/com/google/devtools/build/lib/runtime:blaze_service",
-    ],
-)
-
-java_library(
-    name = "cpu_profiler_service_impl",
-    srcs = ["CpuProfilerServiceImpl.java"],
-    visibility = ["//src/main/java/com/google/devtools/build/lib/bazel:__pkg__"],
-    deps = [
-        ":cpu_profiler_native_support",
-        ":cpu_profiler_native_support_impl",
-        ":cpu_profiler_service",
-    ],
-)
-
-java_library(
     name = "cpu_profiler_native_support",
     srcs = ["CpuProfilerNativeSupport.java"],
+    visibility = ["//src/main/java/net/starlark/java:clients"],
 )
 
 java_library(
@@ -123,6 +91,7 @@ java_library(
         "CpuProfilerNativeSupportImpl.java",
         "JNI.java",
     ],
+    visibility = ["//src/main/java/net/starlark/java:clients"],
     deps = [":cpu_profiler_native_support"],
 )
 

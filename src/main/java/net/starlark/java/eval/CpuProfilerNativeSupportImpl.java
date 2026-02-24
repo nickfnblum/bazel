@@ -16,7 +16,7 @@ package net.starlark.java.eval;
 import java.io.FileDescriptor;
 
 /** Implementation of {@link CpuProfilerNativeSupport}. */
-final class CpuProfilerNativeSupportImpl implements CpuProfilerNativeSupport {
+public final class CpuProfilerNativeSupportImpl implements CpuProfilerNativeSupport {
 
   static {
     JNI.load();

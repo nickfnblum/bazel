@@ -93,10 +93,10 @@ public final class CpuProfiler {
 
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
 
-  private final PprofWriter pprof;
-
   @SuppressWarnings("NonFinalStaticField") // late-bound to ensure SC/LC separation
   private static CpuProfilerNativeSupport nativeSupport;
+
+  private final PprofWriter pprof;
 
   public static void setNativeSupport(CpuProfilerNativeSupport nativeSupport) {
     checkState(CpuProfiler.nativeSupport == null, "setNativeSupport called multiple times");
