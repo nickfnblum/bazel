@@ -137,5 +137,14 @@ public interface FingerprintValueStore {
       }
       return immediateFuture(serializedBytes);
     }
+
+    public void remove(KeyBytesProvider fingerprint) {
+      // KeyBytesProvider is sealed and .equals() is properly implemented for all implementations
+      fingerprintToContents.remove(fingerprint);
+    }
+
+    public Iterable<KeyBytesProvider> keys() {
+      return fingerprintToContents.keySet();
+    }
   }
 }
