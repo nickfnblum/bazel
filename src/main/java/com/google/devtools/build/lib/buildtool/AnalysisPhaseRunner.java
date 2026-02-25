@@ -379,7 +379,8 @@ public final class AnalysisPhaseRunner {
       throws InterruptedException,
           InvalidConfigurationException,
           RepositoryMappingResolutionException,
-          ViewCreationFailedException {
+          ViewCreationFailedException,
+          AbruptExitException {
     Stopwatch timer = Stopwatch.createStarted();
     env.getReporter().handle(Event.progress("Loading complete.  Analyzing..."));
 
@@ -425,7 +426,7 @@ public final class AnalysisPhaseRunner {
               env.getAdditionalConfigurationChangeEvent(),
               remoteAnalysisCachingDependenciesProvider,
               remoteAnalysisCacheReaderDeps);
-    } catch (BuildFailedException | TestExecException | AbruptExitException unexpected) {
+    } catch (BuildFailedException | TestExecException unexpected) {
       throw new IllegalStateException("Unexpected execution exception type: ", unexpected);
     }
 
