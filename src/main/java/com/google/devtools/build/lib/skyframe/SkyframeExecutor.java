@@ -624,11 +624,11 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
         remoteAnalysisCachingDependenciesProvider.lookupKeysToInvalidate(
             keysToLookup, remoteAnalysisCachingState);
 
-    // Log a sample of the invalidated SkyKeys to the INFO log.
     if (keysToInvalidate.isEmpty()) {
       return;
     }
 
+    // Log a sample of the invalidated SkyKeys to the INFO log.
     int maxKeysToLog = 20;
     if (keysToInvalidate.size() > maxKeysToLog) {
       logger.atInfo().log(

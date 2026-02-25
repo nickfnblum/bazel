@@ -457,7 +457,10 @@ public class RemoteAnalysisCacheManager implements RemoteAnalysisCachingDependen
       throws InterruptedException {
     AnalysisCacheInvalidator invalidator = deps.getAnalysisCacheInvalidator();
     if (invalidator == null) {
-      return ImmutableSet.of();
+      // We need to know which keys to invalidate but we don't have an invalidator, presumably
+      // because the backend services couldn't be contacted. Play if safe and invalidate every
+      // value retrieved from the remote cache.
+      return keysToLookup;
     }
     return invalidator.lookupKeysToInvalidate(keysToLookup, remoteAnalysisCachingState);
   }
