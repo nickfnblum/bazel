@@ -45,6 +45,7 @@ import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.Bui
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildMetrics.NetworkMetrics;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildMetrics.PackageMetrics;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildMetrics.RemoteAnalysisCacheStatistics;
+import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildMetrics.RemoteAnalysisCacheStatistics.Entry;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildMetrics.TargetMetrics;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildMetrics.TimingMetrics;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildMetrics.WorkerMetrics;
@@ -74,6 +75,7 @@ import com.google.devtools.build.lib.skyframe.TopLevelStatusEvents.SomeExecution
 import com.google.devtools.build.lib.skyframe.TopLevelStatusEvents.TopLevelTargetPendingExecutionEvent;
 import com.google.devtools.build.lib.skyframe.serialization.FingerprintValueStore;
 import com.google.devtools.build.lib.skyframe.serialization.analysis.RemoteAnalysisCacheClient;
+import com.google.devtools.build.lib.skyframe.serialization.analysis.RemoteAnalysisCachingEventListener;
 import com.google.devtools.build.lib.util.DecimalBucketer;
 import com.google.devtools.build.lib.worker.WorkerProcessMetrics;
 import com.google.devtools.build.lib.worker.WorkerProcessMetricsCollector;
@@ -383,10 +385,35 @@ class MetricsCollector {
   }
 
   private RemoteAnalysisCacheStatistics collectRemoteAnalysisCacheStats() {
+    RemoteAnalysisCachingEventListener listener = env.getRemoteAnalysisCachingEventListener();
     RemoteAnalysisCacheStatistics.Builder result =
         RemoteAnalysisCacheStatistics.newBuilder()
-            .setCacheHits(env.getRemoteAnalysisCachingEventListener().getCacheHits().size())
-            .setCacheMisses(env.getRemoteAnalysisCachingEventListener().getCacheMisses().size());
+            .setCacheHits(listener.getCacheHits().size())
+            .setCacheMisses(listener.getCacheMisses().size());
+
+    for (var entry : listener.getMissesByReason().entrySet()) {
+      result.addCacheMissesByReason(
+          Entry.newBuilder()
+              .setKey(entry.getKey().name())
+              .setValue(entry.getValue().get())
+              .build());
+    }
+
+    for (var entry : listener.getMissesBySkyFunctionName().entrySet()) {
+      result.addCacheMissesBySkyfunction(
+          Entry.newBuilder()
+              .setKey(entry.getKey().getName())
+              .setValue(entry.getValue().get())
+              .build());
+    }
+
+    for (var entry : listener.getHitsBySkyFunctionName().entrySet()) {
+      result.addCacheHitsBySkyfunction(
+          Entry.newBuilder()
+              .setKey(entry.getKey().getName())
+              .setValue(entry.getValue().get())
+              .build());
+    }
 
     FingerprintValueStore.Stats fvsStats =
         env.getRemoteAnalysisCachingEventListener().getFingerprintValueStoreStats();

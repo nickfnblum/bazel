@@ -35,7 +35,7 @@ import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.annotation.Nullable;
 
@@ -57,9 +57,12 @@ public class RemoteAnalysisCachingEventListener {
   private final Set<SkyKey> cacheHits = ConcurrentHashMap.newKeySet();
   private final Set<SkyKey> cacheMisses = ConcurrentHashMap.newKeySet();
   private final Set<SerializationException> serializationExceptions = ConcurrentHashMap.newKeySet();
-  private final ConcurrentHashMap<SkyFunctionName, AtomicInteger> hitsBySkyFunctionName =
+  private final ConcurrentHashMap<SkyFunctionName, AtomicLong> hitsBySkyFunctionName =
       new ConcurrentHashMap<>();
-  private final ConcurrentHashMap<SkyFunctionName, AtomicInteger> missesBySkyFunctionName =
+  private final ConcurrentHashMap<SkyFunctionName, AtomicLong> missesBySkyFunctionName =
+      new ConcurrentHashMap<>();
+
+  private final ConcurrentHashMap<CacheMissReason, AtomicLong> missesByReason =
       new ConcurrentHashMap<>();
 
   private final AtomicReference<FrontierNodeVersion> skyValueVersion = new AtomicReference<>();
@@ -124,7 +127,7 @@ public class RemoteAnalysisCachingEventListener {
           return;
         }
         hitsBySkyFunctionName
-            .computeIfAbsent(key.functionName(), k -> new AtomicInteger())
+            .computeIfAbsent(key.functionName(), k -> new AtomicLong())
             .incrementAndGet();
       }
       case NoCachedData(CacheMissReason reason) -> recordCacheMiss(key, reason);
@@ -133,13 +136,17 @@ public class RemoteAnalysisCachingEventListener {
   }
 
   /** Returns the number of cache hits grouped by SkyFunction name. */
-  public ImmutableMap<SkyFunctionName, AtomicInteger> getHitsBySkyFunctionName() {
+  public ImmutableMap<SkyFunctionName, AtomicLong> getHitsBySkyFunctionName() {
     return ImmutableMap.copyOf(hitsBySkyFunctionName);
   }
 
   /** Returns the number of cache misses grouped by SkyFunction name. */
-  public ImmutableMap<SkyFunctionName, AtomicInteger> getMissesBySkyFunctionName() {
+  public ImmutableMap<SkyFunctionName, AtomicLong> getMissesBySkyFunctionName() {
     return ImmutableMap.copyOf(missesBySkyFunctionName);
+  }
+
+  public ImmutableMap<CacheMissReason, AtomicLong> getMissesByReason() {
+    return ImmutableMap.copyOf(missesByReason);
   }
 
   /** Records a {@link SerializationException} encountered during SkyValue retrievals. */
@@ -171,9 +178,8 @@ public class RemoteAnalysisCachingEventListener {
     return clientId;
   }
 
-  // TODO(lberki): Log "reason"
-  private void recordCacheMiss(SkyKey key, CacheMissReason unusedReason) {
-    if (unusedReason == CacheMissReason.NOT_ATTEMPTED) {
+  private void recordCacheMiss(SkyKey key, CacheMissReason reason) {
+    if (reason == CacheMissReason.NOT_ATTEMPTED) {
       // Not actually a cache miss
       return;
     }
@@ -182,7 +188,9 @@ public class RemoteAnalysisCachingEventListener {
       return;
     }
     missesBySkyFunctionName
-        .computeIfAbsent(key.functionName(), k -> new AtomicInteger())
+        .computeIfAbsent(key.functionName(), k -> new AtomicLong())
         .incrementAndGet();
+
+    missesByReason.computeIfAbsent(reason, r -> new AtomicLong()).incrementAndGet();
   }
 }

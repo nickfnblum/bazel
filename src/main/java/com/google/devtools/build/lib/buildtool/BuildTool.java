@@ -132,7 +132,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
 import javax.annotation.Nullable;
 
@@ -1287,8 +1287,8 @@ public class BuildTool {
     var listener = env.getRemoteAnalysisCachingEventListener();
     var hitsByFunction = listener.getHitsBySkyFunctionName();
     var missesByFunction = listener.getMissesBySkyFunctionName();
-    long totalHits = hitsByFunction.values().stream().mapToLong(AtomicInteger::get).sum();
-    long totalMisses = missesByFunction.values().stream().mapToLong(AtomicInteger::get).sum();
+    long totalHits = hitsByFunction.values().stream().mapToLong(AtomicLong::get).sum();
+    long totalMisses = missesByFunction.values().stream().mapToLong(AtomicLong::get).sum();
     long totalRequests = totalHits + totalMisses;
 
     checkState(totalRequests >= 0, "totalRequests should be non-negative");
@@ -1306,9 +1306,9 @@ public class BuildTool {
             .sorted(comparing(SkyFunctionName::getName))
             .map(
                 functionName -> {
-                  long hits = hitsByFunction.getOrDefault(functionName, new AtomicInteger(0)).get();
+                  long hits = hitsByFunction.getOrDefault(functionName, new AtomicLong(0)).get();
                   long misses =
-                      missesByFunction.getOrDefault(functionName, new AtomicInteger(0)).get();
+                      missesByFunction.getOrDefault(functionName, new AtomicLong(0)).get();
                   long functionTotal = hits + misses;
                   double functionHitRate =
                       functionTotal == 0 ? 0.0 : (double) hits / functionTotal * 100;
