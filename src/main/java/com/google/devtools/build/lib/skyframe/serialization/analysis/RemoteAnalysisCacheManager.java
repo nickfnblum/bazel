@@ -58,6 +58,7 @@ import com.google.devtools.build.lib.server.FailureDetails.RemoteAnalysisCaching
 import com.google.devtools.build.lib.skyframe.PrerequisitePackageFunction;
 import com.google.devtools.build.lib.skyframe.SkyfocusOptions;
 import com.google.devtools.build.lib.skyframe.SkyframeExecutor;
+import com.google.devtools.build.lib.skyframe.WorkspaceInfoFromDiff;
 import com.google.devtools.build.lib.skyframe.serialization.FingerprintValueService;
 import com.google.devtools.build.lib.skyframe.serialization.FrontierNodeVersion;
 import com.google.devtools.build.lib.skyframe.serialization.KeyValueWriter;
@@ -101,6 +102,7 @@ public class RemoteAnalysisCacheManager implements RemoteAnalysisCachingDependen
   private final RemoteAnalysisCacheMode mode;
 
   private final Future<? extends RemoteAnalysisCacheClient> analysisCacheClient;
+  private final Future<? extends AnalysisCacheInvalidator> analysisCacheInvalidator;
   private final RemoteAnalysisCacheDeps deps;
 
   private final ExtendedEventHandler eventHandler;
@@ -162,27 +164,53 @@ public class RemoteAnalysisCacheManager implements RemoteAnalysisCachingDependen
         maybeActiveDirectoriesMatcherFromFlags.map(v -> pi -> v.includes(pi.getPackageFragment()));
     RemoteAnalysisJsonLogWriter jsonLogWriter = createJsonLogWriterMaybe(env, options);
     ListenableFuture<ObjectCodecs> objectCodecs = createObjectCodecs(env);
+    RemoteAnalysisCachingServicesSupplier servicesSupplier =
+        env.getBlazeWorkspace().remoteAnalysisCachingServicesSupplier();
+
+    var workspaceInfoFromDiff = env.getWorkspaceInfoFromDiff();
+    if (workspaceInfoFromDiff == null) {
+      workspaceInfoFromDiff = new WorkspaceInfoFromDiff() {}; // Rely on default implementations
+    }
+    ClientId clientId =
+        workspaceInfoFromDiff
+            .getSnapshot()
+            .orElse(new LongVersionClientId(workspaceInfoFromDiff.getEvaluatingVersion().getVal()));
+    HashCode blazeInstallMD5 = computeBlazeInstallMD5(env, options);
+
+    SettableFuture<FrontierNodeVersion> frontierNodeVersionFuture = SettableFuture.create();
 
     var deps =
         new RemoteAnalysisCacheDeps(
             env,
             jsonLogWriter,
             objectCodecs,
+            frontierNodeVersionFuture,
+            workspaceInfoFromDiff.getEvaluatingVersion(),
+            workspaceInfoFromDiff.getSnapshot(),
+            clientId,
+            blazeInstallMD5,
             options,
             activeDirectoriesMatcher,
             options.serializedFrontierProfile,
             targets);
 
+    ListenableFuture<AnalysisCacheInvalidator> analysisCacheInvalidator =
+        createAnalysisCacheInvalidator(
+            env.getReporter(),
+            clientId,
+            objectCodecs,
+            servicesSupplier.getFingerprintValueService(),
+            servicesSupplier.getAnalysisCacheClient(),
+            frontierNodeVersionFuture);
+
     var manager =
         new RemoteAnalysisCacheManager(
             env.getReporter(),
-            env.getBlazeWorkspace()
-                .remoteAnalysisCachingServicesSupplier()
-                .getSkycacheMetadataParams(),
+            servicesSupplier.getSkycacheMetadataParams(),
+            blazeInstallMD5,
             options,
-            env.getBlazeWorkspace()
-                .remoteAnalysisCachingServicesSupplier()
-                .getAnalysisCacheClient(),
+            servicesSupplier.getAnalysisCacheClient(),
+            analysisCacheInvalidator,
             deps,
             env.getUseFakeStampData(),
             options.skycacheMinimizeMemory,
@@ -270,8 +298,10 @@ public class RemoteAnalysisCacheManager implements RemoteAnalysisCachingDependen
   private RemoteAnalysisCacheManager(
       ExtendedEventHandler eventHandler,
       SkycacheMetadataParams skycacheMetadataParams,
+      HashCode blazeInstallMD5,
       RemoteAnalysisCachingOptions options,
       Future<? extends RemoteAnalysisCacheClient> analysisCacheClient,
+      Future<? extends AnalysisCacheInvalidator> analysisCacheInvalidator,
       RemoteAnalysisCacheDeps deps,
       boolean useFakeStampData,
       boolean minimizeMemory,
@@ -279,6 +309,7 @@ public class RemoteAnalysisCacheManager implements RemoteAnalysisCachingDependen
       Set<String> projectSclOptions) {
     this.mode = options.mode;
     this.analysisCacheClient = analysisCacheClient;
+    this.analysisCacheInvalidator = analysisCacheInvalidator;
     this.deps = deps;
     this.minimizeMemory = minimizeMemory;
     this.eventHandler = eventHandler;
@@ -288,8 +319,7 @@ public class RemoteAnalysisCacheManager implements RemoteAnalysisCachingDependen
     if (areMetadataQueriesEnabled) {
       this.skycacheMetadataParams.init(
           deps.getEvaluatingVersion().getVal(),
-          String.format(
-              "%s-%s", BlazeVersionInfo.instance().getReleaseName(), deps.getBlazeInstallMD5()),
+          String.format("%s-%s", BlazeVersionInfo.instance().getReleaseName(), blazeInstallMD5),
           deps.getTopLevelTargets().stream().map(Label::toString).collect(toImmutableList()),
           useFakeStampData,
           userOptions,
@@ -357,6 +387,36 @@ public class RemoteAnalysisCacheManager implements RemoteAnalysisCachingDependen
                     clientId,
                     eventHandler),
             commonPool());
+  }
+
+  private static HashCode computeBlazeInstallMD5(
+      CommandEnvironment env, RemoteAnalysisCachingOptions options) throws AbruptExitException {
+    if (options.serverChecksumOverride == null) {
+      return requireNonNull(env.getDirectories().getInstallMD5());
+    }
+
+    if (options.mode != RemoteAnalysisCacheMode.DOWNLOAD) {
+      throw new AbruptExitException(
+          DetailedExitCode.of(
+              FailureDetail.newBuilder()
+                  .setMessage("Server checksum override can only be used in download mode")
+                  .setRemoteAnalysisCaching(
+                      RemoteAnalysisCaching.newBuilder()
+                          .setCode(RemoteAnalysisCaching.Code.INCOMPATIBLE_OPTIONS))
+                  .build()));
+    }
+
+    env.getReporter()
+        .handle(
+            Event.warn(
+                String.format(
+                    "Skycache will use server checksum '%s' instead of '%s', which describes"
+                        + " this binary. This may cause crashes or even silent incorrectness."
+                        + " You've been warned! (check the documentation of the command line "
+                        + " flag for more details)",
+                    options.serverChecksumOverride, env.getDirectories().getInstallMD5())));
+
+    return options.serverChecksumOverride;
   }
 
   @Nullable
@@ -481,7 +541,8 @@ public class RemoteAnalysisCacheManager implements RemoteAnalysisCachingDependen
       ImmutableSet<SkyKey> keysToLookup,
       RemoteAnalysisCachingServerState remoteAnalysisCachingState)
       throws InterruptedException {
-    AnalysisCacheInvalidator invalidator = deps.getAnalysisCacheInvalidator();
+    AnalysisCacheInvalidator invalidator =
+        resolveWithTimeout(analysisCacheInvalidator, "analysis cache invalidator");
     if (invalidator == null) {
       // We need to know which keys to invalidate but we don't have an invalidator, presumably
       // because the backend services couldn't be contacted. Play if safe and invalidate every
@@ -534,9 +595,6 @@ public class RemoteAnalysisCacheManager implements RemoteAnalysisCachingDependen
 
     @Nullable private final ListenableFuture<? extends RemoteAnalysisMetadataWriter> metadataWriter;
 
-    @Nullable
-    private final ListenableFuture<? extends AnalysisCacheInvalidator> analysisCacheInvalidator;
-
     private final Collection<Label> topLevelTargets;
     private final AtomicBoolean bailedOut = new AtomicBoolean();
     private final ExtendedEventHandler eventHandler;
@@ -552,11 +610,16 @@ public class RemoteAnalysisCacheManager implements RemoteAnalysisCachingDependen
         CommandEnvironment env,
         RemoteAnalysisJsonLogWriter jsonLogWriter,
         ListenableFuture<ObjectCodecs> objectCodecs,
+        SettableFuture<FrontierNodeVersion> frontierNodeVersionFuture,
+        IntVersion evaluatingVersion,
+        Optional<ClientId> snapshot,
+        ClientId clientId,
+        HashCode blazeInstallMD5,
         RemoteAnalysisCachingOptions options,
         Optional<Predicate<PackageIdentifier>> activeDirectoriesMatcher,
         String serializedFrontierProfile,
         Collection<Label> targets)
-        throws AbruptExitException, InterruptedException {
+        throws AbruptExitException {
       this.topLevelTargets = targets;
       this.mode = options.mode;
       this.serializedFrontierProfile = serializedFrontierProfile;
@@ -568,66 +631,21 @@ public class RemoteAnalysisCacheManager implements RemoteAnalysisCachingDependen
       this.objectCodecs = objectCodecs;
       this.listener = env.getRemoteAnalysisCachingEventListener();
 
-      if (options.serverChecksumOverride != null) {
-        if (mode != RemoteAnalysisCacheMode.DOWNLOAD) {
-          throw new AbruptExitException(
-              DetailedExitCode.of(
-                  FailureDetail.newBuilder()
-                      .setMessage("Server checksum override can only be used in download mode")
-                      .setRemoteAnalysisCaching(
-                          RemoteAnalysisCaching.newBuilder()
-                              .setCode(RemoteAnalysisCaching.Code.INCOMPATIBLE_OPTIONS))
-                      .build()));
-        }
-        env.getReporter()
-            .handle(
-                Event.warn(
-                    String.format(
-                        "Skycache will use server checksum '%s' instead of '%s', which describes"
-                            + " this binary. This may cause crashes or even silent incorrectness."
-                            + " You've been warned! (check the documentation of the command line "
-                            + " flag for more details)",
-                        options.serverChecksumOverride, env.getDirectories().getInstallMD5())));
-        this.blazeInstallMD5 = options.serverChecksumOverride;
-      } else {
-        this.blazeInstallMD5 = requireNonNull(env.getDirectories().getInstallMD5());
-      }
+      this.blazeInstallMD5 = blazeInstallMD5;
       this.distinguisher = options.analysisCacheKeyDistinguisherForTesting;
       this.useFakeStampData = env.getUseFakeStampData();
       this.bailOutOnMissingFingerprint = options.analysisCacheBailOnMissingFingerprint;
 
-      var workspaceInfoFromDiff = env.getWorkspaceInfoFromDiff();
-      if (workspaceInfoFromDiff == null) {
-        // If there is no workspace info, we cannot confidently version the nodes. Use the min
-        // version as a sentinel.
-        this.evaluatingVersion = IntVersion.of(Long.MIN_VALUE);
-        this.snapshot = Optional.empty();
-      } else {
-        this.evaluatingVersion = workspaceInfoFromDiff.getEvaluatingVersion();
-        this.snapshot = workspaceInfoFromDiff.getSnapshot();
-      }
+      this.evaluatingVersion = evaluatingVersion;
+      this.snapshot = snapshot;
       RemoteAnalysisCachingServicesSupplier servicesSupplier =
           env.getBlazeWorkspace().remoteAnalysisCachingServicesSupplier();
-      ClientId clientId =
-          this.snapshot.orElse(new LongVersionClientId(this.evaluatingVersion.getVal()));
       listener.setClientId(clientId);
       servicesSupplier.configure(options, clientId, env.getCommandId().toString(), jsonLogWriter);
-      this.frontierNodeVersionFuture = SettableFuture.create();
+      this.frontierNodeVersionFuture = frontierNodeVersionFuture;
       this.fingerprintValueServiceFuture = servicesSupplier.getFingerprintValueService();
       this.metadataWriter = servicesSupplier.getMetadataWriter();
       this.analysisCacheClient = servicesSupplier.getAnalysisCacheClient();
-      this.analysisCacheInvalidator =
-          createAnalysisCacheInvalidator(
-              env.getReporter(),
-              clientId,
-              objectCodecs,
-              fingerprintValueServiceFuture,
-              analysisCacheClient,
-              frontierNodeVersionFuture);
-    }
-
-    HashCode getBlazeInstallMD5() {
-      return blazeInstallMD5;
     }
 
     IntVersion getEvaluatingVersion() {
@@ -764,11 +782,6 @@ public class RemoteAnalysisCacheManager implements RemoteAnalysisCachingDependen
     @Override
     public Collection<Label> getTopLevelTargets() {
       return topLevelTargets;
-    }
-
-    @Nullable
-    private AnalysisCacheInvalidator getAnalysisCacheInvalidator() throws InterruptedException {
-      return resolveWithTimeout(analysisCacheInvalidator, "analysis cache invalidator");
     }
   }
 }
