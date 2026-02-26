@@ -134,7 +134,6 @@ java_library(
         "cache/OutputMetadataStore.java",
         "cache/PersistentStringIndexer.java",
         "cache/PostableActionCacheStats.java",
-        "cache/VirtualActionInput.java",
     ],
     deps = [
         ":action_lookup_data",
@@ -151,6 +150,7 @@ java_library(
         ":runfiles_metadata",
         ":runfiles_tree",
         ":thread_state_receiver",
+        ":virtual_action_input",
         "//src/main/java/com/google/devtools/build/lib/analysis:symlink_entry",
         "//src/main/java/com/google/devtools/build/lib/analysis/config:build_configuration",
         "//src/main/java/com/google/devtools/build/lib/analysis/config:core_options",
@@ -587,4 +587,20 @@ java_library(
 java_library(
     name = "action_execution_inactivity_event",
     srcs = ["ActionExecutionInactivityEvent.java"],
+)
+
+java_library(
+    name = "virtual_action_input",
+    srcs = ["VirtualActionInput.java"],
+    deps = [
+        ":artifacts",
+        ":file_metadata",
+        "//src/main/java/com/google/devtools/build/lib/util",
+        "//src/main/java/com/google/devtools/build/lib/util:os",
+        "//src/main/java/com/google/devtools/build/lib/vfs",
+        "//src/main/java/com/google/devtools/build/lib/vfs:pathfragment",
+        "//third_party:error_prone_annotations",
+        "//third_party:guava",
+        "@com_google_protobuf//:protobuf_java",
+    ],
 )
