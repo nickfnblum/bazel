@@ -11,26 +11,21 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-package net.starlark.java.eval;
+package com.google.devtools.build.lib.starlarkprofiler;
 
-import java.io.FileDescriptor;
+import com.google.devtools.build.lib.util.OS;
+import javax.annotation.Nullable;
+import net.starlark.java.eval.CpuProfilerNativeSupport;
+import net.starlark.java.eval.CpuProfilerNativeSupportImpl;
 
-/** Implementation of {@link CpuProfilerNativeSupport}. */
-public final class CpuProfilerNativeSupportImpl implements CpuProfilerNativeSupport {
-
-  static {
-    JNI.load();
+/** Implementation of {@link CpuProfilerService}. */
+public final class CpuProfilerServiceImpl implements CpuProfilerService {
+  @Override
+  @Nullable
+  public CpuProfilerNativeSupport getCpuProfilerNativeSupport() {
+    if (OS.getCurrent() == OS.LINUX || OS.getCurrent() == OS.DARWIN) {
+      return new CpuProfilerNativeSupportImpl();
+    }
+    return null;
   }
-
-  @Override
-  public native FileDescriptor createPipe();
-
-  @Override
-  public native boolean startTimer(long periodMicros);
-
-  @Override
-  public native void stopTimer();
-
-  @Override
-  public native int getThreadId();
 }
