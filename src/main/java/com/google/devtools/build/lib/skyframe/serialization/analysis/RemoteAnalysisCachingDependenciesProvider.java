@@ -69,7 +69,7 @@ public interface RemoteAnalysisCachingDependenciesProvider {
      * Returns the string distinguisher to invalidate SkyValues, in addition to the corresponding
      * SkyKey.
      */
-    FrontierNodeVersion getSkyValueVersion() throws SerializationException;
+    FrontierNodeVersion getSkyValueVersion() throws InterruptedException;
 
     /**
      * Returns the {@link ObjectCodecs} supplier for remote analysis caching.
