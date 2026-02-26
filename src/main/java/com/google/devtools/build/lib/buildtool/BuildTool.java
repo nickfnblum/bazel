@@ -425,7 +425,9 @@ public class BuildTool {
 
         // Log stats and sync state even on failure.
         if (analysisCachingDeps != null) {
-          if (analysisCachingDeps.bailedOut()) {
+          if (analysisCacheReaderDeps.mode() == RemoteAnalysisCacheMode.DOWNLOAD
+              && (analysisCacheReaderDeps.shouldBailOutOnMissingFingerprint()
+                  || analysisCachingDeps.bailedOut())) {
             reportOnlyBailOutReason(analysisCacheReaderDeps);
           } else {
             logAnalysisCachingStats(analysisCacheReaderDeps);

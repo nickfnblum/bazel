@@ -89,6 +89,7 @@ import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
 import javax.annotation.Nullable;
 
@@ -515,6 +516,7 @@ public class RemoteAnalysisCacheManager implements RemoteAnalysisCachingDependen
     private final HashCode blazeInstallMD5;
     @Nullable private final String distinguisher;
     private final boolean useFakeStampData;
+    private final boolean bailOutOnMissingFingerprint;
 
     /** Cache lookup parameter requiring integration with external version control. */
     private final IntVersion evaluatingVersion;
@@ -536,6 +538,8 @@ public class RemoteAnalysisCacheManager implements RemoteAnalysisCachingDependen
     private final ListenableFuture<? extends AnalysisCacheInvalidator> analysisCacheInvalidator;
 
     private final Collection<Label> topLevelTargets;
+    private final AtomicBoolean bailedOut = new AtomicBoolean();
+    private final ExtendedEventHandler eventHandler;
 
     private volatile FrontierNodeVersion frontierNodeVersion = null;
 
@@ -557,6 +561,7 @@ public class RemoteAnalysisCacheManager implements RemoteAnalysisCachingDependen
       this.mode = options.mode;
       this.serializedFrontierProfile = serializedFrontierProfile;
       this.activeDirectoriesMatcher = activeDirectoriesMatcher;
+      this.eventHandler = env.getReporter();
 
       this.jsonLogWriter = jsonLogWriter;
 
@@ -589,6 +594,7 @@ public class RemoteAnalysisCacheManager implements RemoteAnalysisCachingDependen
       }
       this.distinguisher = options.analysisCacheKeyDistinguisherForTesting;
       this.useFakeStampData = env.getUseFakeStampData();
+      this.bailOutOnMissingFingerprint = options.analysisCacheBailOnMissingFingerprint;
 
       var workspaceInfoFromDiff = env.getWorkspaceInfoFromDiff();
       if (workspaceInfoFromDiff == null) {
@@ -707,6 +713,36 @@ public class RemoteAnalysisCacheManager implements RemoteAnalysisCachingDependen
     @Override
     public void recordSerializationException(SerializationException e, SkyKey key) {
       listener.recordSerializationException(e, key);
+    }
+
+    @Override
+    public boolean shouldBailOutOnMissingFingerprint() {
+      if (!bailOutOnMissingFingerprint) {
+        return false;
+      }
+      if (bailedOut.get()) {
+        return true;
+      }
+
+      try {
+        FingerprintValueService service = getFingerprintValueService();
+        boolean retVal = service != null && service.getStats().entriesNotFound() > 0;
+        if (retVal) {
+          bailedOut.set(true);
+          eventHandler.handle(
+              Event.warn(
+                  "Skycache: falling back to local evaluation due to unexpected missing cache"
+                      + " entries"));
+          analysisCacheClient.get().bailOutDueToMissingFingerprint();
+        }
+        return retVal;
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return false;
+      } catch (ExecutionException e) {
+        throw new IllegalStateException(
+            "At this point the Skycache client should have been initialized", e);
+      }
     }
 
     private void setTopLevelBuildOptions(BuildOptions buildOptions) {

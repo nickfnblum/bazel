@@ -203,5 +203,10 @@ public interface RemoteAnalysisCachingDependenciesProvider {
     public boolean shouldMinimizeMemory() {
       throw new UnsupportedOperationException();
     }
+
+    @Override
+    public boolean shouldBailOutOnMissingFingerprint() {
+      return false;
+    }
   }
 }

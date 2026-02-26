@@ -18,6 +18,7 @@ import static java.util.Objects.requireNonNull;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -121,6 +122,11 @@ public final class FingerprintValueCache {
 
   public FingerprintValueCache(SyncMode mode) {
     this.mode = mode;
+  }
+
+  @VisibleForTesting
+  Cache<Object, Object> getSerializationCache() {
+    return serializationCache;
   }
 
   /**

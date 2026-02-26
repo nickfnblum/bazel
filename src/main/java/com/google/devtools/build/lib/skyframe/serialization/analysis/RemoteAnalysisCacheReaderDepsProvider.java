@@ -52,4 +52,7 @@ public interface RemoteAnalysisCacheReaderDepsProvider {
   void recordRetrievalResult(RetrievalResult retrievalResult, SkyKey key);
 
   void recordSerializationException(SerializationException e, SkyKey key);
+
+  /** Returns true if bailing out on the first missing fingerprint is enabled. */
+  boolean shouldBailOutOnMissingFingerprint();
 }
