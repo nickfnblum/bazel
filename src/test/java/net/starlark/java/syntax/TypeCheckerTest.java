@@ -691,7 +691,7 @@ public final class TypeCheckerTest {
   @Test
   public void infer_tuple() throws Exception {
     // Empty case.
-    assertTypeGivenDecls("()", Types.tuple());
+    assertTypeGivenDecls("()", Types.EMPTY_TUPLE);
 
     // Fixed-length with homogeneous elements.
     assertTypeGivenDecls("(1, 2, 3)", Types.tuple(Types.INT, Types.INT, Types.INT));
@@ -840,13 +840,13 @@ public final class TypeCheckerTest {
         Types.homogeneousTuple(Types.union(Types.INT, Types.FLOAT, Types.BOOL)),
         "x: tuple[int, float]; y: tuple[bool, ...]");
     assertTypeGivenDecls(
-        "x + y", Types.homogeneousTuple(Types.BOOL), "x: tuple[]; y: tuple[bool, ...]");
+        "x + y", Types.homogeneousTuple(Types.BOOL), "x: tuple[()]; y: tuple[bool, ...]");
     assertTypeGivenDecls(
         "x + y",
         Types.homogeneousTuple(Types.union(Types.INT, Types.BOOL)),
         "x: tuple[int, ...]; y: tuple[bool, ...]");
     assertTypeGivenDecls(
-        "x + y", Types.homogeneousTuple(Types.INT), "x: tuple[int, ...]; y: tuple[]");
+        "x + y", Types.homogeneousTuple(Types.INT), "x: tuple[int, ...]; y: tuple[()]");
 
     // Any inference
     assertTypeGivenDecls("x + y", Types.ANY, "x: Any; y: Any");
@@ -1042,14 +1042,14 @@ public final class TypeCheckerTest {
         "x: tuple[int, float]");
     assertTypeGivenDecls("x * 2", Types.homogeneousTuple(Types.INT), "x: tuple[int, ...]");
     assertTypeGivenDecls("2 * x", Types.homogeneousTuple(Types.INT), "x: tuple[int, ...]");
-    assertTypeGivenDecls("x * 0", Types.tuple(), "x: tuple[int, float]");
-    assertTypeGivenDecls("0 * x", Types.tuple(), "x: tuple[int, float]");
-    assertTypeGivenDecls("x * 0", Types.tuple(), "x: tuple[int, ...]");
-    assertTypeGivenDecls("0 * x", Types.tuple(), "x: tuple[int, ...]");
-    assertTypeGivenDecls("x * -1", Types.tuple(), "x: tuple[str]");
-    assertTypeGivenDecls("-1 * x", Types.tuple(), "x: tuple[str]");
-    assertTypeGivenDecls("x * -1", Types.tuple(), "x: tuple[str, ...]");
-    assertTypeGivenDecls("-1 * x", Types.tuple(), "x: tuple[str, ...]");
+    assertTypeGivenDecls("x * 0", Types.EMPTY_TUPLE, "x: tuple[int, float]");
+    assertTypeGivenDecls("0 * x", Types.EMPTY_TUPLE, "x: tuple[int, float]");
+    assertTypeGivenDecls("x * 0", Types.EMPTY_TUPLE, "x: tuple[int, ...]");
+    assertTypeGivenDecls("0 * x", Types.EMPTY_TUPLE, "x: tuple[int, ...]");
+    assertTypeGivenDecls("x * -1", Types.EMPTY_TUPLE, "x: tuple[str]");
+    assertTypeGivenDecls("-1 * x", Types.EMPTY_TUPLE, "x: tuple[str]");
+    assertTypeGivenDecls("x * -1", Types.EMPTY_TUPLE, "x: tuple[str, ...]");
+    assertTypeGivenDecls("-1 * x", Types.EMPTY_TUPLE, "x: tuple[str, ...]");
     assertTypeGivenDecls("x * y", Types.homogeneousTuple(Types.INT), "x: int; y: tuple[int]");
     assertTypeGivenDecls("x * y", Types.homogeneousTuple(Types.INT), "x: int; y: tuple[int, ...]");
 
