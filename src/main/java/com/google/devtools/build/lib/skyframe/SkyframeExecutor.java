@@ -525,6 +525,8 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
    */
   private final boolean globUnderSingleDep;
 
+  private boolean remoteAnalysisCachingHasEverBeenEnabled = false;
+
   private RemoteAnalysisCachingDependenciesProvider remoteAnalysisCachingDependenciesProvider =
       DisabledDependenciesProvider.INSTANCE;
 
@@ -599,18 +601,25 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
   /**
    * Invalidates the given keys with an external remote analysis service.
    *
-   * <p>If remote analysis caching is disabled, all deserialized nodes are deleted.
+   * <p>If remote analysis caching is currently disabled but has been enabled before, all
+   * deserialized nodes are deleted.
    */
   public void invalidateWithExternalService(ExtendedEventHandler eventHandler)
       throws InterruptedException {
+    boolean remoteAnalysisCachingCurrentlyEnabled = isRemoteAnalysisCachingEnabled();
+    remoteAnalysisCachingHasEverBeenEnabled |= remoteAnalysisCachingCurrentlyEnabled;
+    if (!remoteAnalysisCachingHasEverBeenEnabled) {
+      return;
+    }
+
     ImmutableSet<SkyKey> keysToLookup =
         getEvaluator().getDoneValues().entrySet().parallelStream()
             .filter(e -> e.getValue() instanceof DeserializedSkyValue)
             .map(Entry::getKey)
             .collect(toImmutableSet());
 
-    if (!isRemoteAnalysisCachingEnabled()) {
-      // If skycache is disabled, we need to delete all the deserialized nodes
+    if (!remoteAnalysisCachingCurrentlyEnabled) {
+      // If skycache is currently disabled, we need to delete all the deserialized nodes
       // because they do not have transitive edges to File/Directory nodes.
       if (!keysToLookup.isEmpty()) {
         // Only scan the graph for deletion if there are keys to delete,
